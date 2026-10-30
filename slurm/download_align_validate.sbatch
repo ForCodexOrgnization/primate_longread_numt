@@ -21,6 +21,20 @@ module load SAMtools/1.21-GCC-13.3.0
 module load miniconda/24.11.3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$NUMT_ENV"
+# Optional site module or explicit binary; neither assumes a specific installed version.
+if [[ -n "${MINIMAP2_MODULE:-}" ]]; then
+  module load "$MINIMAP2_MODULE"
+fi
+if [[ -n "${MINIMAP2_BIN:-}" ]]; then
+  [[ -x "$MINIMAP2_BIN" ]] || { echo "ERROR: MINIMAP2_BIN not executable: $MINIMAP2_BIN" >&2; exit 11; }
+  export PATH="$(dirname "$MINIMAP2_BIN"):$PATH"
+fi
+if ! command -v minimap2 >/dev/null 2>&1; then
+  echo "ERROR: minimap2 unavailable. Set MINIMAP2_MODULE or MINIMAP2_BIN in config/bouchet.env." >&2
+  echo "Try: module spider minimap2; or install minimap2 into a separate environment." >&2
+  exit 12
+fi
+minimap2 --version
 for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
