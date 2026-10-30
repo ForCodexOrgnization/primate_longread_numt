@@ -60,11 +60,14 @@ if [[ -f "$OUT/complete.flag" && -s "$OUT/aligned.bam" && -s "$OUT/aligned.bam.b
  samtools quickcheck "$OUT/aligned.bam"
  echo "Already completed: $RUN"; exit 0
 fi
-SCRATCH_BASE="${SLURM_TMPDIR:-${TMPDIR:-}}"
-[[ -n "$SCRATCH_BASE" && -d "$SCRATCH_BASE" ]] || { echo 'SLURM_TMPDIR or TMPDIR required' >&2; exit 24; }
-WORK="$(mktemp -d "$SCRATCH_BASE/lrnumt_${RUN}.XXXXXXXX")"
-cleanup() { [[ ! -d "${WORK:-/nonexistent}" ]] || rm -rf -- "$WORK"; }
-trap cleanup EXIT
+# Persistent per-run staging; never delete partial downloads on failure.
+STAGE_ROOT="${DOWNLOAD_STAGE_DIR:-$ROOT/data/longread_download_stage}"
+[[ "$STAGE_ROOT" = /* && "$STAGE_ROOT" != / && "$STAGE_ROOT" != "$ROOT" ]] || exit 24
+WORK="$STAGE_ROOT/$SAMPLE/$RUN"
+mkdir -p "$WORK"
+echo "[DOWNLOAD] stage=$WORK; failures preserve partial files"
+exec 9>"$WORK/.download.lock"
+flock -n 9 || { echo "Already processing $RUN" >&2; exit 24; }
 IFS=';' read -r -a URL_ARRAY <<< "$URLS"
 [[ "${#URL_ARRAY[@]}" -gt 0 ]] || exit 25
 FILES=()
@@ -75,9 +78,14 @@ for url in "${URL_ARRAY[@]}"; do
  i=$((i+1)); ext=.fastq.gz
  [[ "$url" == *.fastq || "$url" == *.fq ]] && ext=.fastq
  file="$WORK/read_${i}${ext}"
- curl --fail --location --retry 4 --retry-delay 10 --connect-timeout 30 -o "$file.partial" "$url"
- [[ -s "$file.partial" ]] || exit 27
- mv "$file.partial" "$file"
+ if [[ -f "$WORK/read_${i}.url" ]] && [[ "$(cat "$WORK/read_${i}.url")" != "$url" ]]; then echo "Changed URL for $file" >&2; exit 26; fi
+ printf "%s\n" "$url" > "$WORK/read_${i}.url"
+ if [[ ! -s "$file" ]]; then
+   echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
+   curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 --connect-timeout 30 --continue-at - --output "$file.partial" "$url"
+   [[ -s "$file.partial" ]] || exit 27
+   mv "$file.partial" "$file"
+ fi
  [[ "$file" == *.gz ]] && gzip -t "$file"
  FILES+=("$file")
 done
@@ -104,4 +112,5 @@ out,run,preset,n=sys.argv[1:]
 PY
 [[ -s "$OUT/aligned.bam.bai" && -s "$OUT/run_provenance.json" ]] || exit 29
 touch "$OUT/complete.flag"
-echo "COMPLETE: $RUN; staged FASTQs cleaned at job exit"
+for file in "${FILES[@]}"; do rm -f -- "$file"; done
+echo "COMPLETE: $RUN; FASTQs cleaned only after verified analysis"
