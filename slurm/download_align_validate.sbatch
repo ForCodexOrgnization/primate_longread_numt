@@ -39,7 +39,7 @@ for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v 
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
 # csv.writer may generate CRLF; strip CR from final (besthit) field.
-ROW="$(printf '%s' "$ROW" | tr -d '\\r')"
+ROW="$(printf '%s' "$ROW" | tr -d '\015')"
 [[ -n "$ROW" ]] || exit 20
 IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
