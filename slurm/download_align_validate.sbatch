@@ -6,7 +6,13 @@
 #SBATCH --time=23:00:00
 #SBATCH --output=logs/lr_stream_%A_%a.log
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Slurm copies the script into /var/spool/slurmd; BASH_SOURCE is NOT the repo path.
+ROOT="${LR_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+[[ -n "$ROOT" && -s "$ROOT/config/bouchet.env" && -s "$ROOT/scripts/validate_loci.py" ]] || {
+  echo "ERROR: invalid project root: $ROOT (set LR_PROJECT_ROOT)" >&2
+  exit 10
+}
+ROOT="$(cd "$ROOT" && pwd)"
 source "$ROOT/config/bouchet.env"
 : "${BATCH_MANIFEST:?Missing BATCH_MANIFEST}"
 : "${LR_OUT_ROOT:?Missing LR_OUT_ROOT}"
