@@ -1,0 +1,23 @@
+priority	stage	sample	species	run_accession	run_model
+1	cross_platform	SRS4115496	Pongo_abelii	SRR27438208	Revio
+2	cross_platform	SRS4115496	Pongo_abelii	SRR26729452	PromethION
+3	cross_platform	SRS6111929	Pan_paniscus	SRR27438210	Revio
+4	cross_platform	SRS6111929	Pan_paniscus	SRR26208863	PromethION
+5	cross_platform	SRS1041398	Gorilla_gorilla	SRR27438212	Revio
+6	cross_platform	SRS1041398	Gorilla_gorilla	SRR26208967	PromethION
+7	cross_platform	SRS18242897	Symphalangus_syndactylus	SRR27438202	Revio
+8	cross_platform	SRS18242897	Symphalangus_syndactylus	SRR26704416	PromethION
+9	cross_platform	SRS22485649	Hoolock_leuconedys	SRR30454114	Sequel IIe
+10	cross_platform	SRS22485649	Hoolock_leuconedys	SRR30454108	PromethION
+11	cross_platform	SRS19847797	Macaca_mulatta	SRR27194480	Revio
+12	cross_platform	SRS19847797	Macaca_mulatta	SRR27194548	PromethION
+13	diversity	SRS11219892	Colobus_guereza	SRR17126574	PromethION
+14	diversity	SRS4471136	Rhinopithecus_roxellana	SRR8706959	Sequel
+15	diversity	SRS11876249	Pygathrix_nigripes	SRR17881908	Sequel
+16	diversity	SRS24412019	Saimiri_boliviensis	SRR32766827	Revio
+17	diversity	SRS11219891	Cebus_albifrons	SRR17126577	PromethION
+18	diversity	SRS11219896	Ateles_geoffroyi	SRR17126371	PacBio RS II
+19	diversity	SRS21150988	Eulemur_rufifrons	SRR28832813	Sequel II
+20	diversity	SRS11219901	Galago_moholi	SRR17126360	PacBio RS II
+21	diversity	SRS11219903	Loris_tardigradus	SRR17126740	PacBio RS II
+22	diversity	SRS11219886	Saguinus_midas	SRR17126878	PromethION

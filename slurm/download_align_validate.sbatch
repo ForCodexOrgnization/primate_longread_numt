@@ -6,7 +6,13 @@
 #SBATCH --time=23:00:00
 #SBATCH --output=logs/lr_stream_%A_%a.log
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Slurm copies the script into /var/spool/slurmd; BASH_SOURCE is NOT the repo path.
+ROOT="${LR_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+[[ -n "$ROOT" && -s "$ROOT/config/bouchet.env" && -s "$ROOT/scripts/validate_loci.py" ]] || {
+  echo "ERROR: invalid project root: $ROOT (set LR_PROJECT_ROOT)" >&2
+  exit 10
+}
+ROOT="$(cd "$ROOT" && pwd)"
 source "$ROOT/config/bouchet.env"
 : "${BATCH_MANIFEST:?Missing BATCH_MANIFEST}"
 : "${LR_OUT_ROOT:?Missing LR_OUT_ROOT}"
@@ -15,25 +21,53 @@ module load SAMtools/1.21-GCC-13.3.0
 module load miniconda/24.11.3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$NUMT_ENV"
+# Optional site module or explicit binary; neither assumes a specific installed version.
+if [[ -n "${MINIMAP2_MODULE:-}" ]]; then
+  module load "$MINIMAP2_MODULE"
+fi
+if [[ -n "${MINIMAP2_BIN:-}" ]]; then
+  [[ -x "$MINIMAP2_BIN" ]] || { echo "ERROR: MINIMAP2_BIN not executable: $MINIMAP2_BIN" >&2; exit 11; }
+  export PATH="$(dirname "$MINIMAP2_BIN"):$PATH"
+fi
+if ! command -v minimap2 >/dev/null 2>&1; then
+  echo "ERROR: minimap2 unavailable. Set MINIMAP2_MODULE or MINIMAP2_BIN in config/bouchet.env." >&2
+  echo "Try: module spider minimap2; or install minimap2 into a separate environment." >&2
+  exit 12
+fi
+minimap2 --version
 for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
+# csv.writer may generate CRLF; strip CR from final (besthit) field.
+ROW="$(printf '%s' "$ROW" | tr -d '\015')"
 [[ -n "$ROW" ]] || exit 20
 IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
 [[ "$PRESET" == map-pb || "$PRESET" == map-hifi || "$PRESET" == map-ont || "$PRESET" == lr:hq ]] || exit 22
-[[ -s "$REF" && -s "${REF}.fai" && -s "$BESTHIT" ]] || exit 23
+echo "[INPUT CHECK] host=$(hostname) job=${SLURM_JOB_ID:-NA} task=${SLURM_ARRAY_TASK_ID:-NA}"
+printf '[INPUT CHECK] sample=%s run=%s ref=%q besthit=%q preset=%s\n' "$SAMPLE" "$RUN" "$REF" "$BESTHIT" "$PRESET"
+for path in "$REF" "${REF}.fai" "$BESTHIT"; do
+  if [[ ! -s "$path" ]]; then
+    echo "[INPUT ERROR] missing/empty/inaccessible: $path" >&2
+    ls -ld -- "$path" 2>&1 || true
+    exit 23
+  fi
+  ls -lh -- "$path"
+done
 OUT="$LR_OUT_ROOT/$SAMPLE/$RUN"
 mkdir -p "$OUT"
 if [[ -f "$OUT/complete.flag" && -s "$OUT/aligned.bam" && -s "$OUT/aligned.bam.bai" && -s "$OUT/nuclear_support.tsv" && -s "$OUT/run_provenance.json" ]]; then
  samtools quickcheck "$OUT/aligned.bam"
  echo "Already completed: $RUN"; exit 0
 fi
-SCRATCH_BASE="${SLURM_TMPDIR:-${TMPDIR:-}}"
-[[ -n "$SCRATCH_BASE" && -d "$SCRATCH_BASE" ]] || { echo 'SLURM_TMPDIR or TMPDIR required' >&2; exit 24; }
-WORK="$(mktemp -d "$SCRATCH_BASE/lrnumt_${RUN}.XXXXXXXX")"
-cleanup() { [[ ! -d "${WORK:-/nonexistent}" ]] || rm -rf -- "$WORK"; }
-trap cleanup EXIT
+# Persistent per-run staging; never delete partial downloads on failure.
+STAGE_ROOT="${DOWNLOAD_STAGE_DIR:-$ROOT/data/longread_download_stage}"
+[[ "$STAGE_ROOT" = /* && "$STAGE_ROOT" != / && "$STAGE_ROOT" != "$ROOT" ]] || exit 24
+WORK="$STAGE_ROOT/$SAMPLE/$RUN"
+mkdir -p "$WORK"
+echo "[DOWNLOAD] stage=$WORK; failures preserve partial files"
+exec 9>"$WORK/.download.lock"
+flock -n 9 || { echo "Already processing $RUN" >&2; exit 24; }
 IFS=';' read -r -a URL_ARRAY <<< "$URLS"
 [[ "${#URL_ARRAY[@]}" -gt 0 ]] || exit 25
 FILES=()
@@ -44,9 +78,14 @@ for url in "${URL_ARRAY[@]}"; do
  i=$((i+1)); ext=.fastq.gz
  [[ "$url" == *.fastq || "$url" == *.fq ]] && ext=.fastq
  file="$WORK/read_${i}${ext}"
- curl --fail --location --retry 4 --retry-delay 10 --connect-timeout 30 -o "$file.partial" "$url"
- [[ -s "$file.partial" ]] || exit 27
- mv "$file.partial" "$file"
+ if [[ -f "$WORK/read_${i}.url" ]] && [[ "$(cat "$WORK/read_${i}.url")" != "$url" ]]; then echo "Changed URL for $file" >&2; exit 26; fi
+ printf "%s\n" "$url" > "$WORK/read_${i}.url"
+ if [[ ! -s "$file" ]]; then
+   echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
+   curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 --connect-timeout 30 --continue-at - --output "$file.partial" "$url"
+   [[ -s "$file.partial" ]] || exit 27
+   mv "$file.partial" "$file"
+ fi
  [[ "$file" == *.gz ]] && gzip -t "$file"
  FILES+=("$file")
 done
@@ -73,4 +112,5 @@ out,run,preset,n=sys.argv[1:]
 PY
 [[ -s "$OUT/aligned.bam.bai" && -s "$OUT/run_provenance.json" ]] || exit 29
 touch "$OUT/complete.flag"
-echo "COMPLETE: $RUN; staged FASTQs cleaned at job exit"
+for file in "${FILES[@]}"; do rm -f -- "$file"; done
+echo "COMPLETE: $RUN; FASTQs cleaned only after verified analysis"
