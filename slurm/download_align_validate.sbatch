@@ -39,73 +39,7 @@ for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v 
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
 # csv.writer may generate CRLF; strip CR from final (besthit) field.
-ROW="${ROW%
-[[ -n "$ROW" ]] || exit 20
-IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
-[[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
-[[ "$PRESET" == map-pb || "$PRESET" == map-hifi || "$PRESET" == map-ont || "$PRESET" == lr:hq ]] || exit 22
-echo "[INPUT CHECK] host=$(hostname) job=${SLURM_JOB_ID:-NA} task=${SLURM_ARRAY_TASK_ID:-NA}"
-printf '[INPUT CHECK] sample=%s run=%s ref=%q besthit=%q preset=%s\n' "$SAMPLE" "$RUN" "$REF" "$BESTHIT" "$PRESET"
-for path in "$REF" "${REF}.fai" "$BESTHIT"; do
-  if [[ ! -s "$path" ]]; then
-    echo "[INPUT ERROR] missing/empty/inaccessible: $path" >&2
-    ls -ld -- "$path" 2>&1 || true
-    exit 23
-  fi
-  ls -lh -- "$path"
-done
-OUT="$LR_OUT_ROOT/$SAMPLE/$RUN"
-mkdir -p "$OUT"
-if [[ -f "$OUT/complete.flag" && -s "$OUT/aligned.bam" && -s "$OUT/aligned.bam.bai" && -s "$OUT/nuclear_support.tsv" && -s "$OUT/run_provenance.json" ]]; then
- samtools quickcheck "$OUT/aligned.bam"
- echo "Already completed: $RUN"; exit 0
-fi
-SCRATCH_BASE="${SLURM_TMPDIR:-${TMPDIR:-}}"
-[[ -n "$SCRATCH_BASE" && -d "$SCRATCH_BASE" ]] || { echo 'SLURM_TMPDIR or TMPDIR required' >&2; exit 24; }
-WORK="$(mktemp -d "$SCRATCH_BASE/lrnumt_${RUN}.XXXXXXXX")"
-cleanup() { [[ ! -d "${WORK:-/nonexistent}" ]] || rm -rf -- "$WORK"; }
-trap cleanup EXIT
-IFS=';' read -r -a URL_ARRAY <<< "$URLS"
-[[ "${#URL_ARRAY[@]}" -gt 0 ]] || exit 25
-FILES=()
-i=0
-for url in "${URL_ARRAY[@]}"; do
- [[ "$url" == ftp.sra.ebi.ac.uk/* || "$url" == https://ftp.sra.ebi.ac.uk/* ]] || exit 26
- [[ "$url" == https://* ]] || url="https://$url"
- i=$((i+1)); ext=.fastq.gz
- [[ "$url" == *.fastq || "$url" == *.fq ]] && ext=.fastq
- file="$WORK/read_${i}${ext}"
- curl --fail --location --retry 4 --retry-delay 10 --connect-timeout 30 -o "$file.partial" "$url"
- [[ -s "$file.partial" ]] || exit 27
- mv "$file.partial" "$file"
- [[ "$file" == *.gz ]] && gzip -t "$file"
- FILES+=("$file")
-done
-reads_stream() {
- for file in "${FILES[@]}"; do
-  if [[ "$file" == *.gz ]]; then gzip -dc "$file"; else cat "$file"; fi
- done
-}
-rm -f "$OUT/complete.flag"
-reads_stream | minimap2 -t 12 -ax "$PRESET" "$REF" - | samtools sort -@ 4 -m 2G -o "$OUT/aligned.bam.partial" -
-samtools quickcheck "$OUT/aligned.bam.partial"
-mv "$OUT/aligned.bam.partial" "$OUT/aligned.bam"
-samtools index "$OUT/aligned.bam"
-samtools idxstats "$OUT/aligned.bam" >/dev/null
-python "$ROOT/scripts/validate_loci.py" --bam "$OUT/aligned.bam" --reference "$REF" --besthit "$BESTHIT" --sample "$SAMPLE" --run "$RUN" --outdir "$OUT"
-[[ -s "$OUT/nuclear_support.tsv" && -s "$OUT/reference_numt.fa" ]] || exit 28
-samtools faidx "$REF" chrM > "$OUT/chrM.fa"
-makeblastdb -in "$OUT/chrM.fa" -dbtype nucl >/dev/null
-blastn -query "$OUT/reference_numt.fa" -db "$OUT/chrM.fa" -outfmt '6 qseqid sseqid pident length qstart qend sstart send bitscore' > "$OUT/reference_numt_to_chrM.tsv"
-python - "$OUT" "$RUN" "$PRESET" "${#FILES[@]}" <<'PY'
-import datetime,json,pathlib,sys
-out,run,preset,n=sys.argv[1:]
-(pathlib.Path(out)/'run_provenance.json').write_text(json.dumps(dict(run=run,preset=preset,downloaded_files=int(n),completed_utc=datetime.datetime.now(datetime.timezone.utc).isoformat()),indent=2))
-PY
-[[ -s "$OUT/aligned.bam.bai" && -s "$OUT/run_provenance.json" ]] || exit 29
-touch "$OUT/complete.flag"
-echo "COMPLETE: $RUN; staged FASTQs cleaned at job exit"
-\r'}"
+ROW="$(printf '%s' "$ROW" | tr -d '\\r')"
 [[ -n "$ROW" ]] || exit 20
 IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
