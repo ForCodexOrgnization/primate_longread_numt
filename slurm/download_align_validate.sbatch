@@ -42,7 +42,16 @@ ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MAN
 IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
 [[ "$PRESET" == map-pb || "$PRESET" == map-hifi || "$PRESET" == map-ont || "$PRESET" == lr:hq ]] || exit 22
-[[ -s "$REF" && -s "${REF}.fai" && -s "$BESTHIT" ]] || exit 23
+echo "[INPUT CHECK] host=$(hostname) job=${SLURM_JOB_ID:-NA} task=${SLURM_ARRAY_TASK_ID:-NA}"
+printf '[INPUT CHECK] sample=%s run=%s ref=%q besthit=%q preset=%s\n' "$SAMPLE" "$RUN" "$REF" "$BESTHIT" "$PRESET"
+for path in "$REF" "${REF}.fai" "$BESTHIT"; do
+  if [[ ! -s "$path" ]]; then
+    echo "[INPUT ERROR] missing/empty/inaccessible: $path" >&2
+    ls -ld -- "$path" 2>&1 || true
+    exit 23
+  fi
+  ls -lh -- "$path"
+done
 OUT="$LR_OUT_ROOT/$SAMPLE/$RUN"
 mkdir -p "$OUT"
 if [[ -f "$OUT/complete.flag" && -s "$OUT/aligned.bam" && -s "$OUT/aligned.bam.bai" && -s "$OUT/nuclear_support.tsv" && -s "$OUT/run_provenance.json" ]]; then
