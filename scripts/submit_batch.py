@@ -25,7 +25,7 @@ if not chosen:print('No unfinished runs selected');raise SystemExit(0)
 folder=ROOT/'data/batches';folder.mkdir(parents=True,exist_ok=True)
 manifest=folder/('batch_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')+'.tsv')
 with manifest.open('w',newline='') as f:
- w=csv.DictWriter(f,fieldnames=list(chosen[0]),delimiter='\t');w.writeheader();w.writerows(chosen)
+ w=csv.DictWriter(f,fieldnames=list(chosen[0]),delimiter='\t',lineterminator='\n');w.writeheader();w.writerows(chosen)
 cmd=['sbatch',f'--array=1-{len(chosen)}%{min(a.concurrent,len(chosen))}',f'--export=ALL,LR_PROJECT_ROOT={ROOT},BATCH_MANIFEST={manifest},LR_OUT_ROOT={outroot}',str(ROOT/'slurm/download_align_validate.sbatch')]
 print('Selected',len(chosen),'runs from',len(seen),'samples; manifest:',manifest)
 print(' '.join(cmd))
