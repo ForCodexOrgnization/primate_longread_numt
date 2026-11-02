@@ -82,7 +82,19 @@ for url in "${URL_ARRAY[@]}"; do
  printf "%s\n" "$url" > "$WORK/read_${i}.url"
  if [[ ! -s "$file" ]]; then
    echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
-   curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 --connect-timeout 30 --continue-at - --output "$file.partial" "$url"
+   # Keep a 3-hour safety margin before the 23h Slurm time limit.
+   # timeout terminates curl while retaining the .partial file for the next job.
+   echo "[DOWNLOAD] started=$(date -u +%FT%TZ)"
+   if timeout --signal=TERM --kill-after=60s "${DOWNLOAD_MAX_SECONDS:-72000}" \
+       curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 \
+         --connect-timeout 30 --continue-at - --no-progress-meter \
+         --output "$file.partial" "$url"; then
+     echo "[DOWNLOAD] completed $file at $(date -u +%FT%TZ)"
+   else
+     rc=$?
+     echo "[DOWNLOAD] interrupted or failed; curl/timeout exit=$rc; retained $(stat -c %s "$file.partial" 2>/dev/null || echo 0) bytes" >&2
+     exit 75
+   fi
    [[ -s "$file.partial" ]] || exit 27
    mv "$file.partial" "$file"
  fi
