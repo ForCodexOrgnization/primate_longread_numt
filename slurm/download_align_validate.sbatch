@@ -85,7 +85,9 @@ for url in "${URL_ARRAY[@]}"; do
    # Keep a 3-hour safety margin before the 23h Slurm time limit.
    # timeout terminates curl while retaining the .partial file for the next job.
    echo "[DOWNLOAD] started=$(date -u +%FT%TZ)"
-   if timeout --signal=TERM --kill-after=60s "${DOWNLOAD_MAX_SECONDS:-72000}" \
+   remaining=$(( ${DOWNLOAD_MAX_SECONDS:-72000} - SECONDS ))
+   if (( remaining <= 0 )); then echo "[DOWNLOAD] checkpoint before walltime" >&2; exit 75; fi
+   if timeout --signal=TERM --kill-after=60s "$remaining" \
        curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 \
          --connect-timeout 30 --continue-at - --no-progress-meter \
          --output "$file.partial" "$url"; then
@@ -106,6 +108,10 @@ reads_stream() {
   if [[ "$file" == *.gz ]]; then gzip -dc "$file"; else cat "$file"; fi
  done
 }
+if (( SECONDS >= ${DOWNLOAD_MAX_SECONDS:-72000} )); then
+  echo "[CHECKPOINT] Downloads finished; defer alignment to next Slurm allocation" >&2
+  exit 75
+fi
 rm -f "$OUT/complete.flag"
 reads_stream | minimap2 -t 12 -ax "$PRESET" "$REF" - | samtools sort -@ 4 -m 2G -o "$OUT/aligned.bam.partial" -
 samtools quickcheck "$OUT/aligned.bam.partial"
