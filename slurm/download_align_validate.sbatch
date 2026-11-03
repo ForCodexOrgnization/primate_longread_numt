@@ -98,9 +98,25 @@ for url in "${URL_ARRAY[@]}"; do
      exit 75
    fi
    [[ -s "$file.partial" ]] || exit 27
+   # Do not promote a truncated or corrupted gzip stream to a completed download.
+   if [[ "$file" == *.gz ]] && ! gzip -t "$file.partial"; then
+     echo "[DOWNLOAD ERROR] gzip CRC/length check failed for $file.partial. Resume data is not trustworthy." >&2
+     bad="$file.corrupt.$(date -u +%Y%m%dT%H%M%SZ)"
+     mv -- "$file.partial" "$bad"
+     echo "[DOWNLOAD ERROR] quarantined corrupt FASTQ: $bad" >&2
+     echo "[DOWNLOAD ERROR] next submission will start this FASTQ from byte 0" >&2
+     exit 76
+   fi
    mv "$file.partial" "$file"
  fi
- [[ "$file" == *.gz ]] && gzip -t "$file"
+ if [[ "$file" == *.gz ]] && ! gzip -t "$file"; then
+   echo "[DOWNLOAD ERROR] existing staged FASTQ failed gzip verification: $file" >&2
+   bad="$file.corrupt.$(date -u +%Y%m%dT%H%M%SZ)"
+   mv -- "$file" "$bad"
+   echo "[DOWNLOAD ERROR] quarantined corrupt FASTQ: $bad" >&2
+   echo "[DOWNLOAD ERROR] next submission will start this FASTQ from byte 0" >&2
+   exit 76
+ fi
  FILES+=("$file")
 done
 reads_stream() {
