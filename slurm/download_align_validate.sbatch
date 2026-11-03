@@ -6,7 +6,13 @@
 #SBATCH --time=23:00:00
 #SBATCH --output=logs/lr_stream_%A_%a.log
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Slurm copies the script into /var/spool/slurmd; BASH_SOURCE is NOT the repo path.
+ROOT="${LR_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+[[ -n "$ROOT" && -s "$ROOT/config/bouchet.env" && -s "$ROOT/scripts/validate_loci.py" ]] || {
+  echo "ERROR: invalid project root: $ROOT (set LR_PROJECT_ROOT)" >&2
+  exit 10
+}
+ROOT="$(cd "$ROOT" && pwd)"
 source "$ROOT/config/bouchet.env"
 : "${BATCH_MANIFEST:?Missing BATCH_MANIFEST}"
 : "${LR_OUT_ROOT:?Missing LR_OUT_ROOT}"
@@ -15,25 +21,64 @@ module load SAMtools/1.21-GCC-13.3.0
 module load miniconda/24.11.3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$NUMT_ENV"
-for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
+# Optional site module or explicit binary; neither assumes a specific installed version.
+if [[ -n "${MINIMAP2_MODULE:-}" ]]; then
+  module load "$MINIMAP2_MODULE"
+fi
+if [[ -n "${MINIMAP2_BIN:-}" ]]; then
+  [[ -x "$MINIMAP2_BIN" ]] || { echo "ERROR: MINIMAP2_BIN not executable: $MINIMAP2_BIN" >&2; exit 11; }
+  export PATH="$(dirname "$MINIMAP2_BIN"):$PATH"
+fi
+if ! command -v minimap2 >/dev/null 2>&1; then
+  echo "ERROR: minimap2 unavailable. Set MINIMAP2_MODULE or MINIMAP2_BIN in config/bouchet.env." >&2
+  echo "Try: module spider minimap2; or install minimap2 into a separate environment." >&2
+  exit 12
+fi
+minimap2 --version
+if [[ -n "${ARIA2_MODULE:-}" ]]; then module load "$ARIA2_MODULE"; fi
+if [[ -n "${ARIA2_BIN:-}" ]]; then
+  [[ -x "$ARIA2_BIN" ]] || { echo "ARIA2_BIN not executable: $ARIA2_BIN" >&2; exit 13; }
+  export PATH="$(dirname "$ARIA2_BIN"):$PATH"
+fi
+if ! command -v aria2c >/dev/null 2>&1; then
+  echo "ERROR: aria2c not found. Set ARIA2_MODULE or ARIA2_BIN in config/bouchet.env." >&2
+  echo "Check: module spider aria2 ; or install aria2 into a separate conda environment." >&2
+  exit 13
+fi
+aria2c --version | head -1
+for cmd in aria2c timeout flock minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
+# csv.writer may generate CRLF; strip CR from final (besthit) field.
+ROW="$(printf '%s' "$ROW" | tr -d '\015')"
 [[ -n "$ROW" ]] || exit 20
 IFS=$'\t' read -r SAMPLE SPECIES RUN PLATFORM PRESET URLS REF BESTHIT <<< "$ROW"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9._-]+$ && "$RUN" =~ ^[A-Za-z0-9._-]+$ ]] || exit 21
 [[ "$PRESET" == map-pb || "$PRESET" == map-hifi || "$PRESET" == map-ont || "$PRESET" == lr:hq ]] || exit 22
-[[ -s "$REF" && -s "${REF}.fai" && -s "$BESTHIT" ]] || exit 23
+echo "[INPUT CHECK] host=$(hostname) job=${SLURM_JOB_ID:-NA} task=${SLURM_ARRAY_TASK_ID:-NA}"
+printf '[INPUT CHECK] sample=%s run=%s ref=%q besthit=%q preset=%s\n' "$SAMPLE" "$RUN" "$REF" "$BESTHIT" "$PRESET"
+for path in "$REF" "${REF}.fai" "$BESTHIT"; do
+  if [[ ! -s "$path" ]]; then
+    echo "[INPUT ERROR] missing/empty/inaccessible: $path" >&2
+    ls -ld -- "$path" 2>&1 || true
+    exit 23
+  fi
+  ls -lh -- "$path"
+done
 OUT="$LR_OUT_ROOT/$SAMPLE/$RUN"
 mkdir -p "$OUT"
 if [[ -f "$OUT/complete.flag" && -s "$OUT/aligned.bam" && -s "$OUT/aligned.bam.bai" && -s "$OUT/nuclear_support.tsv" && -s "$OUT/run_provenance.json" ]]; then
  samtools quickcheck "$OUT/aligned.bam"
  echo "Already completed: $RUN"; exit 0
 fi
-SCRATCH_BASE="${SLURM_TMPDIR:-${TMPDIR:-}}"
-[[ -n "$SCRATCH_BASE" && -d "$SCRATCH_BASE" ]] || { echo 'SLURM_TMPDIR or TMPDIR required' >&2; exit 24; }
-WORK="$(mktemp -d "$SCRATCH_BASE/lrnumt_${RUN}.XXXXXXXX")"
-cleanup() { [[ ! -d "${WORK:-/nonexistent}" ]] || rm -rf -- "$WORK"; }
-trap cleanup EXIT
+# Persistent per-run staging; never delete partial downloads on failure.
+STAGE_ROOT="${DOWNLOAD_STAGE_DIR:-$ROOT/data/longread_download_stage}"
+[[ "$STAGE_ROOT" = /* && "$STAGE_ROOT" != / && "$STAGE_ROOT" != "$ROOT" ]] || exit 24
+WORK="$STAGE_ROOT/$SAMPLE/$RUN"
+mkdir -p "$WORK"
+echo "[DOWNLOAD] stage=$WORK; failures preserve partial files"
+exec 9>"$WORK/.download.lock"
+flock -n 9 || { echo "Already processing $RUN" >&2; exit 24; }
 IFS=';' read -r -a URL_ARRAY <<< "$URLS"
 [[ "${#URL_ARRAY[@]}" -gt 0 ]] || exit 25
 FILES=()
@@ -44,10 +89,57 @@ for url in "${URL_ARRAY[@]}"; do
  i=$((i+1)); ext=.fastq.gz
  [[ "$url" == *.fastq || "$url" == *.fq ]] && ext=.fastq
  file="$WORK/read_${i}${ext}"
- curl --fail --location --retry 4 --retry-delay 10 --connect-timeout 30 -o "$file.partial" "$url"
- [[ -s "$file.partial" ]] || exit 27
- mv "$file.partial" "$file"
- [[ "$file" == *.gz ]] && gzip -t "$file"
+ if [[ -f "$WORK/read_${i}.url" ]] && [[ "$(cat "$WORK/read_${i}.url")" != "$url" ]]; then echo "Changed URL for $file" >&2; exit 26; fi
+ printf "%s\n" "$url" > "$WORK/read_${i}.url"
+ if [[ ! -s "$file" ]]; then
+   echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
+   # aria2 control files (.aria2) preserve segmented download state across jobs.
+   # Do not reuse legacy curl partial files: they have no aria2 control metadata.
+   if [[ -s "$file.partial" && ! -f "$file.partial.aria2" ]]; then
+     legacy="$file.legacy_curl_partial.$(date -u +%Y%m%dT%H%M%SZ)"
+     mv -- "$file.partial" "$legacy"
+     echo "[DOWNLOAD] quarantined unverified curl partial: $legacy"
+   fi
+   remaining=$(( ${DOWNLOAD_MAX_SECONDS:-72000} - SECONDS ))
+   if (( remaining <= 0 )); then echo "[DOWNLOAD] checkpoint before walltime" >&2; exit 75; fi
+   connections="${ARIA2_CONNECTIONS:-4}"
+   [[ "$connections" =~ ^[1-9][0-9]*$ ]] && (( connections <= 16 )) || { echo "Invalid ARIA2_CONNECTIONS: $connections" >&2; exit 26; }
+   echo "[DOWNLOAD] aria2c connections=$connections remaining_budget=${remaining}s started=$(date -u +%FT%TZ)"
+   if timeout --signal=TERM --kill-after=120s "$remaining" \
+     aria2c --continue=true --file-allocation=none \
+       --max-connection-per-server="$connections" --split="$connections" \
+       --min-split-size=4M --max-tries=12 --retry-wait=15 \
+       --connect-timeout=30 --timeout=60 --auto-file-renaming=false \
+       --allow-overwrite=false --summary-interval=60 --console-log-level=notice \
+       --dir="$WORK" --out="$(basename "$file.partial")" "$url"; then
+     echo "[DOWNLOAD] aria2c finished at $(date -u +%FT%TZ)"
+   else
+     rc=$?
+     echo "[DOWNLOAD] aria2c interrupted/failed (exit=$rc); partial=$(stat -c %s "$file.partial" 2>/dev/null || echo 0) bytes; control=$(test -f "$file.partial.aria2" && echo yes || echo no)" >&2
+     exit 75
+   fi
+   # aria2c success must close/remove its sidecar; never promote incomplete segments.
+   if [[ -e "$file.partial.aria2" ]]; then echo "[DOWNLOAD ERROR] aria2 control file remains; refusing promotion" >&2; exit 77; fi
+   [[ -s "$file.partial" ]] || exit 27
+   # Do not promote a truncated or corrupted gzip stream to a completed download.
+   if [[ "$file" == *.gz ]] && ! gzip -t "$file.partial"; then
+     echo "[DOWNLOAD ERROR] gzip CRC/length check failed for $file.partial. Resume data is not trustworthy." >&2
+     bad="$file.corrupt.$(date -u +%Y%m%dT%H%M%SZ)"
+     mv -- "$file.partial" "$bad"
+     echo "[DOWNLOAD ERROR] quarantined corrupt FASTQ: $bad" >&2
+     echo "[DOWNLOAD ERROR] next submission will start this FASTQ from byte 0" >&2
+     exit 76
+   fi
+   mv "$file.partial" "$file"
+ fi
+ if [[ "$file" == *.gz ]] && ! gzip -t "$file"; then
+   echo "[DOWNLOAD ERROR] existing staged FASTQ failed gzip verification: $file" >&2
+   bad="$file.corrupt.$(date -u +%Y%m%dT%H%M%SZ)"
+   mv -- "$file" "$bad"
+   echo "[DOWNLOAD ERROR] quarantined corrupt FASTQ: $bad" >&2
+   echo "[DOWNLOAD ERROR] next submission will start this FASTQ from byte 0" >&2
+   exit 76
+ fi
  FILES+=("$file")
 done
 reads_stream() {
@@ -55,6 +147,10 @@ reads_stream() {
   if [[ "$file" == *.gz ]]; then gzip -dc "$file"; else cat "$file"; fi
  done
 }
+if (( SECONDS >= ${DOWNLOAD_MAX_SECONDS:-72000} )); then
+  echo "[CHECKPOINT] Downloads finished; defer alignment to next Slurm allocation" >&2
+  exit 75
+fi
 rm -f "$OUT/complete.flag"
 reads_stream | minimap2 -t 12 -ax "$PRESET" "$REF" - | samtools sort -@ 4 -m 2G -o "$OUT/aligned.bam.partial" -
 samtools quickcheck "$OUT/aligned.bam.partial"
@@ -73,4 +169,5 @@ out,run,preset,n=sys.argv[1:]
 PY
 [[ -s "$OUT/aligned.bam.bai" && -s "$OUT/run_provenance.json" ]] || exit 29
 touch "$OUT/complete.flag"
-echo "COMPLETE: $RUN; staged FASTQs cleaned at job exit"
+for file in "${FILES[@]}"; do rm -f -- "$file"; done
+echo "COMPLETE: $RUN; FASTQs cleaned only after verified analysis"
