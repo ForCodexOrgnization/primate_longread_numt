@@ -45,3 +45,11 @@ The repo paths are the actual configured strings, not verified active Bouchet fi
 2. Extract/reassemble actual NUMT insertions from anchored long reads, refine junctions.
 3. BLAST assembled NUMTs against sample-specific consensus chrM, preserve multi-hit alignments and calculate reciprocal overlap / breakpoint errors.
 4. Independently discover missed NUMTs; benchmark only assessable events.
+
+## Streaming pilot: aria2c FASTQ downloads
+
+The streaming Slurm workflow (`scripts/submit_batch.py` -> `slurm/download_align_validate.sbatch`) uses `aria2c` for parallel HTTPS transfers from ENA. The download is staged at `data/longread_download_stage/<sample>/<run>/`, with a persistent `.aria2` sidecar for segmented resumption after an interrupted or time-limited job. Files are gzip-checked before promotion, and staged FASTQs are removed only after successful alignment and validation.
+
+On Bouchet, verify `aria2c --version` in the job environment. Set `ARIA2_MODULE` or `ARIA2_BIN` in `config/bouchet.env` if needed. The pipeline deliberately fails with an actionable error if aria2 is unavailable. Use `ARIA2_CONNECTIONS=4` initially; larger values may not help on a shared or throttled ENA connection. `DOWNLOAD_MAX_SECONDS` defaults to 72000 (20 hours), preserving download progress ahead of the 23-hour partition walltime. Rerun the same manifest to resume.
+
+**Migration:** legacy curl `.partial` files without an aria2 `.aria2` metadata sidecar are renamed to `.legacy_curl_partial.<timestamp>` rather than being mixed with aria2 segments. Previously failed gzip files stay quarantined and must not be used for alignment. Inspect and delete quarantined files after confirming they are no longer needed; these can occupy tens of GB.
