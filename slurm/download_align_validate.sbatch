@@ -35,7 +35,18 @@ if ! command -v minimap2 >/dev/null 2>&1; then
   exit 12
 fi
 minimap2 --version
-for cmd in curl minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
+if [[ -n "${ARIA2_MODULE:-}" ]]; then module load "$ARIA2_MODULE"; fi
+if [[ -n "${ARIA2_BIN:-}" ]]; then
+  [[ -x "$ARIA2_BIN" ]] || { echo "ARIA2_BIN not executable: $ARIA2_BIN" >&2; exit 13; }
+  export PATH="$(dirname "$ARIA2_BIN"):$PATH"
+fi
+if ! command -v aria2c >/dev/null 2>&1; then
+  echo "ERROR: aria2c not found. Set ARIA2_MODULE or ARIA2_BIN in config/bouchet.env." >&2
+  echo "Check: module spider aria2 ; or install aria2 into a separate conda environment." >&2
+  exit 13
+fi
+aria2c --version | head -1
+for cmd in aria2c timeout flock minimap2 samtools blastn makeblastdb python gzip; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
 python -c 'import pysam'
 ROW="$(awk -F '\t' -v n="$SLURM_ARRAY_TASK_ID" 'NR==n+1{print;exit}' "$BATCH_MANIFEST")"
 # csv.writer may generate CRLF; strip CR from final (besthit) field.
@@ -82,21 +93,33 @@ for url in "${URL_ARRAY[@]}"; do
  printf "%s\n" "$url" > "$WORK/read_${i}.url"
  if [[ ! -s "$file" ]]; then
    echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
-   # Keep a 3-hour safety margin before the 23h Slurm time limit.
-   # timeout terminates curl while retaining the .partial file for the next job.
-   echo "[DOWNLOAD] started=$(date -u +%FT%TZ)"
+   # aria2 control files (.aria2) preserve segmented download state across jobs.
+   # Do not reuse legacy curl partial files: they have no aria2 control metadata.
+   if [[ -s "$file.partial" && ! -f "$file.partial.aria2" ]]; then
+     legacy="$file.legacy_curl_partial.$(date -u +%Y%m%dT%H%M%SZ)"
+     mv -- "$file.partial" "$legacy"
+     echo "[DOWNLOAD] quarantined unverified curl partial: $legacy"
+   fi
    remaining=$(( ${DOWNLOAD_MAX_SECONDS:-72000} - SECONDS ))
    if (( remaining <= 0 )); then echo "[DOWNLOAD] checkpoint before walltime" >&2; exit 75; fi
-   if timeout --signal=TERM --kill-after=60s "$remaining" \
-       curl --fail --location --retry 12 --retry-all-errors --retry-delay 15 \
-         --connect-timeout 30 --continue-at - --no-progress-meter \
-         --output "$file.partial" "$url"; then
-     echo "[DOWNLOAD] completed $file at $(date -u +%FT%TZ)"
+   connections="${ARIA2_CONNECTIONS:-4}"
+   [[ "$connections" =~ ^[1-9][0-9]*$ ]] && (( connections <= 16 )) || { echo "Invalid ARIA2_CONNECTIONS: $connections" >&2; exit 26; }
+   echo "[DOWNLOAD] aria2c connections=$connections remaining_budget=${remaining}s started=$(date -u +%FT%TZ)"
+   if timeout --signal=TERM --kill-after=120s "$remaining" \
+     aria2c --continue=true --file-allocation=none \
+       --max-connection-per-server="$connections" --split="$connections" \
+       --min-split-size=4M --max-tries=12 --retry-wait=15 \
+       --connect-timeout=30 --timeout=60 --auto-file-renaming=false \
+       --allow-overwrite=false --summary-interval=60 --console-log-level=notice \
+       --dir="$WORK" --out="$(basename "$file.partial")" "$url"; then
+     echo "[DOWNLOAD] aria2c finished at $(date -u +%FT%TZ)"
    else
      rc=$?
-     echo "[DOWNLOAD] interrupted or failed; curl/timeout exit=$rc; retained $(stat -c %s "$file.partial" 2>/dev/null || echo 0) bytes" >&2
+     echo "[DOWNLOAD] aria2c interrupted/failed (exit=$rc); partial=$(stat -c %s "$file.partial" 2>/dev/null || echo 0) bytes; control=$(test -f "$file.partial.aria2" && echo yes || echo no)" >&2
      exit 75
    fi
+   # aria2c success must close/remove its sidecar; never promote incomplete segments.
+   if [[ -e "$file.partial.aria2" ]]; then echo "[DOWNLOAD ERROR] aria2 control file remains; refusing promotion" >&2; exit 77; fi
    [[ -s "$file.partial" ]] || exit 27
    # Do not promote a truncated or corrupted gzip stream to a completed download.
    if [[ "$file" == *.gz ]] && ! gzip -t "$file.partial"; then
