@@ -153,10 +153,14 @@ def main():
                   "sstart", "send", "bitscore", "evalue"]
     hits = defaultdict(list)
     if query_map:
+        subprocess.run(
+            ["makeblastdb", "-in", str(chrm_fa), "-dbtype", "nucl"],
+            stdout=subprocess.DEVNULL, check=True,
+        )
         with open(raw_path, "w") as handle:
             subprocess.run([
                 "blastn", "-task", "blastn", "-dust", "no", "-word_size", "7",
-                "-query", str(queries), "-subject", str(chrm_fa),
+                "-query", str(queries), "-db", str(chrm_fa),
                 "-num_threads", str(args.threads), "-evalue", "1e-2",
                 "-outfmt", "6 " + " ".join(hit_fields),
             ], stdout=handle, check=True)
