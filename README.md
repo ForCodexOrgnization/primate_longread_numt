@@ -53,3 +53,42 @@ The streaming Slurm workflow (`scripts/submit_batch.py` -> `slurm/download_align
 On Bouchet, verify `aria2c --version` in the job environment. Set `ARIA2_MODULE` or `ARIA2_BIN` in `config/bouchet.env` if needed. The pipeline deliberately fails with an actionable error if aria2 is unavailable. Use `ARIA2_CONNECTIONS=4` initially; larger values may not help on a shared or throttled ENA connection. `DOWNLOAD_MAX_SECONDS` defaults to 72000 (20 hours), preserving download progress ahead of the 23-hour partition walltime. Rerun the same manifest to resume.
 
 **Migration:** legacy curl `.partial` files without an aria2 `.aria2` metadata sidecar are renamed to `.legacy_curl_partial.<timestamp>` rather than being mixed with aria2 segments. Previously failed gzip files stay quarantined and must not be used for alignment. Inspect and delete quarantined files after confirming they are no longer needed; these can occupy tens of GB.
+
+## ONT-read-to-chrM homology check (no new alignment)
+
+After `slurm/validate_chrm_candidates.sbatch` produces the nuclear support
+audit, run:
+
+```bash
+mkdir -p logs
+sbatch slurm/validate_read_chrm_homology.sbatch
+```
+
+Defaults: `SRS4115496` / `SRR26729452` / `Pongo_abelii`. Override
+`SAMPLE`, `RUN`, `SPECIES` with `sbatch --export=ALL,SAMPLE=...,RUN=...,SPECIES=...`
+for another completed sample.
+
+The script reads the *already generated* `chrM_candidate_validation` locus/read
+evidence, selects at most 40 reads per locus with strict nuclear support, extracts
+the CIGAR-mapped read bases corresponding to the nuclear candidate (including
+insertions), and BLASTs those read-derived sequences against chrM in the
+species-specific whole-genome FASTA. It neither downloads FASTQs nor remaps BAMs.
+The default exploratory chrM thresholds are alignment >=75 bp and identity
+>=75%, with an expected-site window expanded by 250 bp. These are provisional
+screening cutoffs, not a definitive NUMT pathogenicity or origin call.
+An expected-site hit is a BLAST alignment overlapping the expanded original
+chrM interval; it does not prove exact boundaries. At least 2 distinct reads
+must pass for the locus-level support label.
+
+Outputs under `results/<sample>/<run>/longread_chrM_homology/`:
+
+- `nuclear_mapped_read_segments.fa`: selected read-derived NUMT segments.
+- `read_segments_vs_chrM.blast.tsv`: all BLAST HSPs.
+- `per_read_chrM_homology.tsv`: best qualifying BLAST hit and expected-site hit.
+- `per_locus_chrM_homology.tsv`: read counts and group (BLAST_QC_PASS / FAIL).
+
+The analysis is **conditional on nuclear support** and uses short-read-derived
+chrM coordinates for expected-site checking. It is supplementary sequence
+homology evidence, not de novo assembly or proof of insertion age. Read-derived
+homology can also reflect reference and mapping biases. Inspect the BLAST HSPs,
+especially when a locus has a very short original chrM hit.
