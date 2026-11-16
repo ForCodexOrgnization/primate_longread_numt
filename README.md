@@ -92,3 +92,89 @@ chrM coordinates for expected-site checking. It is supplementary sequence
 homology evidence, not de novo assembly or proof of insertion age. Read-derived
 homology can also reflect reference and mapping biases. Inspect the BLAST HSPs,
 especially when a locus has a very short original chrM hit.
+
+## Representative cross-species NUMT validation pilot (16 samples, 16 species)
+
+The checked-in `data/pilot_run_selection.tsv` represents **16 biological
+samples / 16 species / 22 ENA runs**. Six samples have planned ONT/PacBio
+cross-platform pairs; ten add taxonomic diversity. This is a *candidate*
+selection, not a claim that all runs are executable yet: reference,
+best-hit file, FASTQ access, and particularly PacBio CLR/HiFi type need
+verification. **Do not assign PacBio presets from instrument name alone.**
+
+### Prepare on Bouchet
+
+```bash
+cd /nfs/roberts/scratch/pi_njl27/lt692/primate_longread_numt
+python3 scripts/select_pilot_runs.py --resolved data/resolved_runs.tsv \
+  --selection data/pilot_run_selection.tsv --out data/pilot_resolved_runs.tsv
+python3 scripts/generate_presets.py --resolved data/pilot_resolved_runs.tsv \
+  --out data/pilot_presets.tsv
+# IMPORTANT: manually verify and replace all PacBio REVIEW with map-pb
+# for CLR/subreads, or map-hifi for confirmed CCS/HiFi.
+source config/bouchet.env
+python3 scripts/build_remote_manifest.py \
+  --resolved data/pilot_resolved_runs.tsv \
+  --reference-dir "$WHOLE_REF_DIR" --besthit-dir "$BESTHIT_DIR" \
+  --presets data/pilot_presets.tsv --out data/pilot_remote_manifest.tsv
+cat data/pilot_remote_manifest.skipped.tsv
+```
+
+Only READY runs appear in `data/pilot_remote_manifest.tsv`.
+Investigate skipped runs rather than asserting they completed. Missing
+best-hit files may require generating them using the existing NUMT pipeline;
+do not silently substitute data from another sample.
+
+### Run alignments in bounded batches
+
+```bash
+python3 scripts/submit_batch.py --manifest data/pilot_remote_manifest.tsv \
+  --unit run --batch-size 2 --concurrent 1 --dry-run
+# Remove --dry-run only when ready. Do not launch duplicate runs while
+# an earlier array is still active; rerun the command after job completion.
+```
+
+A completed run retains aligned BAM/BAI and `complete.flag`, even after
+staged FASTQs are deleted. The submitter skips completed alignments.
+
+### Validate completed alignments (no FASTQ transfer or realignment)
+
+```bash
+python3 scripts/submit_validation_batch.py \
+  --manifest data/pilot_remote_manifest.tsv --batch-size 4 --concurrent 2 --dry-run
+# Remove --dry-run to submit a Slurm array.
+```
+
+The validation submitter uses only completed alignment runs, and skips
+runs with both existing validation outputs. Do not run multiple validation
+submission batches concurrently for the same unfinished runs.
+
+The new `slurm/validate_pilot_array.sbatch` runs, per sample/run:
+
+1. `validate_chrm_candidates.py` (nuclear CIGAR and sequence support);
+2. `validate_read_chrm_homology.py` (nuclear-mapped read fragments BLASTed
+   against that species' chrM, including expected-locus homology).
+
+For the first validated Pongo sample both existing results are reused.
+
+### Summarize by sample, species and sequencing technology
+
+```bash
+python3 scripts/aggregate_representative_pilot.py \
+  --manifest data/pilot_remote_manifest.tsv
+```
+
+Outputs in `results/representative_pilot_summary/`:
+
+- `run_summary.tsv`: per-run status and counts;
+- `run_locus_evidence.tsv`: per-locus per-run and platform evidence;
+- `sample_species_summary.tsv`: non-duplicated sample/species counts,
+  and validation status.
+
+**Interpretation:** the numerator for both nuclear and chrM evidence is
+`n_both_supported`; the denominator for the targeted analysis is the
+number of chrM-hit loci, preferably stratified by `BLAST_QC_PASS` and
+`BLAST_QC_FAIL`. Multiple runs from a biological sample must not be
+treated as separate independent samples. The validation relies on
+reference-guided nuclear coordinates and predicted chrM intervals; it
+is targeted, supportive evidence, not de novo NUMT discovery.
