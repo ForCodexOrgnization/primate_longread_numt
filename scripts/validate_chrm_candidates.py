@@ -147,15 +147,24 @@ def main():
                 "n_strict_sequence_support": len(counts["strict"]),
                 "strict_status": "SUPPORTED" if len(counts["strict"]) >= args.min_support else "NOT_SUPPORTED",
             })
-    def write_tsv(path, rows):
-        if not rows:
-            return
+    def write_tsv(path, rows, fields):
         with open(path, "w", newline="") as fh:
-            wr = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter="\t", lineterminator="\n")
+            wr = csv.DictWriter(fh, fieldnames=fields, delimiter="\t", lineterminator="\n")
             wr.writeheader()
             wr.writerows(rows)
-    write_tsv(out / "chrM_candidate_locus_validation.tsv", summary)
-    write_tsv(out / "chrM_candidate_read_evidence.tsv", readrows)
+    locus_fields = ["locus_id", "nuclear_chrom", "nuclear_start0", "nuclear_end0",
+                    "chrM_hit", "chrM_start", "chrM_end", "blast_pident",
+                    "blast_align_length", "group", "n_primary_reads",
+                    "n_left_window", "n_right_window", "n_continuous_locus",
+                    "n_sequence_concordant", "n_both_junction_windows",
+                    "n_strict_sequence_support", "strict_status"]
+    read_fields = ["locus_id", "group", "read", "mapq", "left_aligned",
+                   "locus_aligned", "right_aligned", "locus_fraction",
+                   "locus_identity_to_nuclear_ref", "max_internal_deletion",
+                   "left_ok", "right_ok", "both_junction_windows_ok",
+                   "strict_sequence_support"]
+    write_tsv(out / "chrM_candidate_locus_validation.tsv", summary, locus_fields)
+    write_tsv(out / "chrM_candidate_read_evidence.tsv", readrows, read_fields)
     print("Candidates with recorded chrM hits:", len(summary))
     for group in ("BLAST_QC_PASS", "BLAST_QC_FAIL"):
         subset = [r for r in summary if r["group"] == group]
