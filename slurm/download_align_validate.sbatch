@@ -93,7 +93,25 @@ for url in "${URL_ARRAY[@]}"; do
  printf "%s\n" "$url" > "$WORK/read_${i}.url"
  # Every staged FASTQ must match ENA's authoritative bytes and MD5.
  metadata="$(python "$ROOT/scripts/get_ena_fastq_metadata.py" --run "$RUN" --index "$i" --url "$url")" || { echo "[ENA ERROR] could not retrieve trustworthy FASTQ metadata" >&2; exit 78; }
- IFS= if [[ ! -s "$file" ]]; then
+ IFS=$'\\t' read -r expected_md5 expected_bytes expected_url <<< "$metadata"
+ echo "[ENA CHECK] file=$i expected_bytes=$expected_bytes expected_md5=$expected_md5"
+ verify_ena_file() {
+   local path="$1" actual_bytes actual_md5
+   [[ -s "$path" ]] || return 1
+   actual_bytes="$(stat -c %s -- "$path")"
+   if [[ "$actual_bytes" != "$expected_bytes" ]]; then
+     echo "[ENA CHECK] size mismatch $path: $actual_bytes != $expected_bytes" >&2
+     return 1
+   fi
+   actual_md5="$(md5sum -- "$path")"
+   actual_md5="${actual_md5%% *}"
+   if [[ "$actual_md5" != "$expected_md5" ]]; then
+     echo "[ENA CHECK] MD5 mismatch $path: $actual_md5 != $expected_md5" >&2
+     return 1
+   fi
+   echo "[ENA CHECK] PASS $path"
+ }
+ if [[ ! -s "$file" ]]; then
    echo "[DOWNLOAD] resume $url; current bytes=$(stat -c %s "$file.partial" 2>/dev/null || echo 0)"
    # aria2 control files (.aria2) preserve segmented download state across jobs.
    # Do not reuse legacy curl partial files: they have no aria2 control metadata.
