@@ -31,7 +31,7 @@ with open(a.resolved) as f:
   ready.append([sample,species,run,r['read_type'],preset,';'.join(urls),refs[0],hits[0]])
 out=Path(a.out);out.parent.mkdir(parents=True,exist_ok=True)
 with out.open('w',newline='') as f:
- w=csv.writer(f,delimiter='\t');w.writerow(['sample','species','run','platform','preset','fastq_ftp','reference','besthit']);w.writerows(ready)
+ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['sample','species','run','platform','preset','fastq_ftp','reference','besthit']);w.writerows(ready)
 with out.with_suffix('.skipped.tsv').open('w',newline='') as f:
- w=csv.writer(f,delimiter='\t');w.writerow(['run','sample','reason']);w.writerows(skipped)
+ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['run','sample','reason']);w.writerows(skipped)
 print('Ready runs:',len(ready),'Skipped:',len(skipped))
