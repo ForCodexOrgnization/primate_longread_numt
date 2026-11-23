@@ -177,6 +177,7 @@ def main():
                 for chrom,start,end in intervals:
                     fh.write(f"{chrom}\t{start}\t{end}\n")
             inputs=[]
+            per_run_target_records={}
             for i,(r,bam) in enumerate(ready):
                 extracted=work/f"{i:05d}.extracted.bam"
                 tagged=work/f"{i:05d}.tagged.bam"
@@ -186,6 +187,10 @@ def main():
                          "-r",f"ID:{r['run']}","-r",f"SM:{args.sample}",
                          "-r",f"PL:{args.platform}",
                          "-o",str(tagged),str(extracted)])
+                n_tagged=int(subprocess.check_output(["samtools","view","-c",str(tagged)],text=True).strip())
+                if n_tagged<=0:
+                    raise RuntimeError(f"No targeted alignments for source run {r['run']}")
+                per_run_target_records[r["run"]]=n_tagged
                 extracted.unlink()
                 inputs.append(tagged)
             inlist=work/"bams.list"
@@ -203,8 +208,14 @@ def main():
                     fields = dict(x.split(":",1) for x in line.split("\t")[1:])
                     rg_ids.add(fields.get("ID"))
             expected_rg = {r["run"] for r,_ in ready}
-            if not expected_rg.issubset(rg_ids):
-                raise RuntimeError(f"Merged BAM missing run read groups: {sorted(expected_rg-rg_ids)}")
+            if rg_ids != expected_rg:
+                raise RuntimeError(f"Merged BAM read groups differ from run IDs: {sorted(rg_ids)} != {sorted(expected_rg)}")
+            for source_run, expected_count in per_run_target_records.items():
+                actual_count=int(subprocess.check_output(["samtools","view","-c","-r",source_run,str(merged)],text=True).strip())
+                if actual_count != expected_count:
+                    raise RuntimeError(f"Target read-count mismatch for {source_run}: {actual_count} != {expected_count}")
+            report["per_run_target_records"]=per_run_target_records
+            report["target_record_counts_verified"]=True
             run_cmd(["samtools","index","-@",str(args.threads),str(merged)])
             run_cmd(["samtools","idxstats",str(merged)])
             if not check_nonempty(merged) or not check_nonempty(Path(str(merged)+".bai")):
