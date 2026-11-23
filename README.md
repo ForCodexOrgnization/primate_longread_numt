@@ -251,3 +251,44 @@ and sample-matched NUMT besthit. Any missing input is skipped, **not** silently
 replaced with a different species' reference. A skipped run is not a validated
 run; investigate `*.skipped.tsv`. ENA run-level platform lookup is essential:
 the original metadata lists platforms at the *sample* level, not the run level.
+
+
+### Verify matched Illumina and plan sample-platform runs (no submission)
+
+With the full `all_longread_resolved_runs.tsv` (do **not** use the
+non-pilot-only TSV), run the following after pulling the latest commit:
+
+```bash
+# Re-run ENA resolver once to add fastq_bytes to the saved run report.
+# Existing ENA cache prevents repeated requests for previously fetched runs.
+python3 scripts/resolve_ena_runs.py \
+  --candidate-runs data/all_longread_candidate_runs.tsv \
+  --out data/all_longread_resolved_runs.tsv
+
+python3 scripts/audit_all_longread_cohort.py \
+  --resolved data/all_longread_resolved_runs.tsv \
+  --metadata data/all_longread_samples.tsv \
+  --pilot-selection data/pilot_run_selection.tsv \
+  --outdir data/all_longread_audit
+```
+
+Reports:
+- `sample_shortread_status.tsv`: exact Illumina run-level ENA evidence
+  matched to the same metadata sample identifier. `VERIFIED_ILLUMINA_FASTQ`
+  means ENA reports an Illumina run with FASTQ links, not that reads were
+  downloaded or that donor/specimen identity was biologically confirmed.
+- `sample_platform_groups.tsv`: biological sample x platform groups with
+  run counts, pilot status, known compressed FASTQ GB and missing size counts.
+  Do not treat multiple runs as independent biological samples.
+- `nonpilot_run_priority_review.tsv`: ranked potential new runs, sorted by
+  ENA compressed FASTQ size **only**. Size does not imply coverage or read
+  quality. Never use these rankings to assign PacBio presets.
+- `audit_problems.tsv`: ENA metadata inconsistencies requiring review.
+
+This step **never submits jobs or merges alignments**. Existing batch
+processing remains per run; the group report is a pre-submission planning
+artifact. Before processing full groups, separately confirm per-run read type
+(HiFi versus CLR/subreads), total download/storage budget, reference and
+besthit availability, and whether pilot results can be reused. Biological
+sample IDs and ENA's sample_accession naming schemes may differ (SRS/ERS/SAMN),
+so verifying the actual biospecimen requires accession provenance if needed.
