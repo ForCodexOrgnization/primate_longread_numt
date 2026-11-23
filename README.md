@@ -422,3 +422,68 @@ Sanity-test its integration before launching many runs:
 ```bash
 python3 -m unittest discover -s tests -p 'test_sample_aggregation.py' -v
 ```
+
+## Sample-platform multi-run NUMT-target BAMs (non-destructive)
+
+The new scripts/merge_sample_platform_numt_bam.py creates one IGV-ready BAM
+per biological sample and long-read technology, using already aligned run BAMs.
+It extracts the UNION of nuclear candidate NUMT loci (+1000 bp padding) and
+the entire chrM, writes a unique SAM read-group ID and RG tag for each source
+run (SM=sample; PL=ONT/PACBIO), then merges, indexes and verifies the result.
+
+The output path is:
+results/sample_platform_bams/SAMPLE/ONT_or_PACBIO/numt_target_merged.bam
+plus its .bai index and numt_target_merged.audit.json.
+
+Existing full-genome aligned.bam files, run-level evidence and validation TSVs
+are preserved. FASTQs are still removed by the existing alignment script ONLY
+after that run completes successfully. This merge script never removes FASTQ
+or full BAM files. A targeted BAM is NOT a whole-genome replacement.
+
+By default, it refuses incomplete groups and never overwrites an existing
+merged BAM. Use --allow-partial for exploratory output only; it records missing
+runs and partial=true in the audit JSON. Check the reference and besthit
+consistency before merging, and allow extra disk for temporary targeted BAMs.
+
+Preview one sample (no writes; safe on Bouchet login node):
+
+```bash
+cd /nfs/roberts/scratch/pi_njl27/lt692/primate_longread_numt
+module load SAMtools/1.21-GCC-13.3.0
+python3 scripts/merge_sample_platform_numt_bam.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --sample SRS11219892 --platform ONT --dry-run
+```
+
+Submit small, bounded Slurm merge batches only after reviewing active jobs,
+available disk space, and per-run alignment completion:
+
+```bash
+mkdir -p logs
+python3 scripts/submit_sample_platform_merges.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --batch-size 2 --concurrent 1
+
+# Remove this comment and run the following only when ready:
+python3 scripts/submit_sample_platform_merges.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --batch-size 2 --concurrent 1 --submit
+```
+
+For whole-cohort groups repeat --manifest to include
+data/all_longread_nonpilot_manifest.tsv. One Slurm task = one sample-platform
+merge, not one task per run. New submissions are opt-in (--submit).
+
+Inspect:
+
+```bash
+samtools view -H results/sample_platform_bams/SRS11219892/ONT/numt_target_merged.bam | grep '^@RG'
+samtools idxstats results/sample_platform_bams/SRS11219892/ONT/numt_target_merged.bam
+python3 -m unittest discover -s tests -p 'test_target_bam_merge.py' -v
+```
+
+The merged BAM is for IGV and targeted review, while the independent
+sample-level validation TSV aggregator remains responsible for the final
+SUPPORTED/NOT_SUPPORTED evidence. The full-genome BAMs were NOT deleted;
+they remain necessary for off-target supplementary alignments, newly discovered
+NUMTs, or changes to the nuclear target coordinates.
