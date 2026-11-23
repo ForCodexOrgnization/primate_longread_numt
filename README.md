@@ -378,3 +378,47 @@ coordinates change. Retain a full BAM at least until sample-level validation,
 manual inspection and threshold selection are finalized. Audit disk usage with
 `du -sh results/*/*/aligned.bam data/longread_download_stage` (adjust as
 needed); plan the 9.85 TB compressed FASTQ input separately from BAM storage.
+
+
+### Full parameter revalidation from the retained BAM (isolated outputs)
+
+To lower flank/identity/deletion/MAPQ cutoffs **and re-run read-to-chrM
+BLAST** (rather than only re-aggregate old read evidence), first run a
+parameter-tagged scenario on completed run BAMs:
+
+```bash
+python3 scripts/rerun_strict_validation.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --sample SRS11219892 --run SRR17126574 \
+  --tag flank50_identity75 \
+  --min-identity 0.75 --min-flank-fraction 0.50 \
+  --max-reads-per-locus 200
+```
+
+This writes `chrm_candidate_validation_flank50_identity75/` and
+`longread_chrM_homology_flank50_identity75/` alongside the ORIGINAL
+validator outputs. It does **not** overwrite the original evidence or
+aligned BAM, and saves a revalidation parameter JSON for verification.
+
+After *all relevant runs* have the same tagged scenario, aggregate using
+matching arguments:
+
+```bash
+python3 scripts/aggregate_sample_level_validation.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --validation-tag flank50_identity75 \
+  --min-identity 0.75 --min-flank-aligned 50 \
+  --outdir results/sample_level_flank50_identity75
+```
+
+The aggregator verifies the run-level scenario parameter JSON and refuses
+to merge inconsistent thresholds. A scenario with incomplete runs is
+explicitly `PARTIAL`; add `--require-complete` when a final table
+must have every manifest run processed. For a full-cohort scenario, pass both
+pilot and nonpilot manifests. The revalidator is a per-run command; submit
+bounded Slurm batches rather than running large cohorts on the login node.
+Sanity-test its integration before launching many runs:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_sample_aggregation.py' -v
+```
