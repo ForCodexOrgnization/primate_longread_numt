@@ -64,7 +64,7 @@ def main():
     try:
         with bed.open("w") as handle:
             for chrom,start,end in merged:
-                handle.write(f"{chrom}\\t{start}\\t{end}\\n")
+                handle.write(f"{chrom}\t{start}\t{end}\n")
         # samtools -L emits each alignment at most once even for BED overlap.
         pysam.view("-b","-L",str(bed),"-o",str(raw),str(source),catch_stdout=False)
         pysam.sort("-@",str(args.threads),"-o",str(sorted_bam),str(raw))
