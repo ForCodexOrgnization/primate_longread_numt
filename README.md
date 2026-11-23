@@ -297,9 +297,9 @@ so verifying the actual biospecimen requires accession provenance if needed.
 ## Sample-level strict NUMT validation and storage
 
 **Current alignments are whole-genome BAMs**, not NUMT-only BAMs.
-The existing \`slurm/download_align_validate.sbatch\` downloads FASTQ into
+The existing `slurm/download_align_validate.sbatch` downloads FASTQ into
 persistent staging, verifies ENA size/MD5 and gzip integrity, streams alignment
-to a sorted indexed BAM, runs first-stage \`validate_loci.py\`, records provenance,
+to a sorted indexed BAM, runs first-stage `validate_loci.py`, records provenance,
 then removes ONLY the verified staged FASTQ files on success. Failed or
 interrupted jobs preserve staged data for safe resumption. The indexed full BAM
 and all per-run evidence remain available for IGV and parameter reassessment.
@@ -308,24 +308,24 @@ The second-stage nuclear and chrM validations are separately scheduled.
 After pilot and expanded runs are validated, aggregate at the **biological
 sample** level, reusing all saved run-level evidence:
 
-\`\`\`bash
+```bash
 python3 scripts/aggregate_sample_level_validation.py \
   --manifest data/pilot_remote_manifest.tsv \
   --manifest data/all_longread_nonpilot_manifest.tsv \
   --outdir results/sample_level_validation
-\`\`\`
+```
 
 Use only manifests that actually exist on Bouchet; if expanded runs have not
 been prepared, the pilot manifest alone works. Incomplete runs are reported
-in \`run_status.tsv\` and excluded from current support counts.
+in `run_status.tsv` and excluded from current support counts.
 
 Outputs:
-- \`sample_locus_validation.tsv\`: **final sample-level strict validation**,
+- `sample_locus_validation.tsv`: **final sample-level strict validation**,
   pooled unique (run, read) support across runs for each sample and NUMT.
-- \`sample_platform_locus_validation.tsv\`: ONT and PacBio evidence separated.
-- \`sample_summary.tsv\`: unique samples/species, completed run counts and loci.
-- \`run_status.tsv\`: missing/pending evidence; never interpreted as negatives.
-- \`parameters.json\`: complete aggregation thresholds and source manifests.
+- `sample_platform_locus_validation.tsv`: ONT and PacBio evidence separated.
+- `sample_summary.tsv`: unique samples/species, completed run counts and loci.
+- `run_status.tsv`: missing/pending evidence; never interpreted as negatives.
+- `parameters.json`: complete aggregation thresholds and source manifests.
 
 Defaults match original strict nuclear mode: MAPQ>=20, identity>=80%, 90%
 locus fraction, left and right >=80 bp aligned within 100-bp windows,
@@ -338,12 +338,12 @@ and candidate NUMT coordinates; discrepancies FAIL CLOSED instead of merging.
 
 To explore stricter thresholds without touching BAMs:
 
-\`\`\`bash
+```bash
 python3 scripts/aggregate_sample_level_validation.py \
   --manifest data/pilot_remote_manifest.tsv \
   --outdir results/sample_level_validation_identity85 \
   --min-identity 0.85
-\`\`\`
+```
 
 **Important limitation:** old nuclear evidence excludes MAPQ<20 reads;
 original chrM BLAST was calculated only for the ORIGINAL strict nuclear
@@ -361,20 +361,20 @@ After both validations are complete, a separate NUMT+chrM-region BAM can
 be produced for IGV, reducing downstream storage needs without losing the
 original full BAM:
 
-\`\`\`bash
+```bash
 python3 scripts/create_numt_target_bam.py \
   --bam results/SAMPLE/RUN/aligned.bam \
   --reference /absolute/path/to/species_whole_reference.fa \
   --loci results/SAMPLE/RUN/chrm_candidate_validation/chrM_candidate_locus_validation.tsv \
   --out results/SAMPLE/RUN/numt_target.bam \
   --padding 1000
-\`\`\`
+```
 
 This archives alignments overlapping each nuclear NUMT (+1000 bp) and chrM,
-plus an index and \`numt_target.bam.audit.json\`. **No full BAM is deleted
+plus an index and `numt_target.bam.audit.json`. **No full BAM is deleted
 automatically.** A targeted BAM is NOT a lossless whole-genome alignment: it
 can omit off-target supplementary alignments and reads needed if NUMT
 coordinates change. Retain a full BAM at least until sample-level validation,
 manual inspection and threshold selection are finalized. Audit disk usage with
-\`du -sh results/*/*/aligned.bam data/longread_download_stage\` (adjust as
+`du -sh results/*/*/aligned.bam data/longread_download_stage` (adjust as
 needed); plan the 9.85 TB compressed FASTQ input separately from BAM storage.
