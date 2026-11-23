@@ -487,3 +487,67 @@ sample-level validation TSV aggregator remains responsible for the final
 SUPPORTED/NOT_SUPPORTED evidence. The full-genome BAMs were NOT deleted;
 they remain necessary for off-target supplementary alignments, newly discovered
 NUMTs, or changes to the nuclear target coordinates.
+
+## Storage-saving policy: cleanup after >90% sample-platform validation
+
+Optional automatic cleanup is available **only after a complete, indexed
+sample-platform targeted BAM merge**. The gate is:
+
+validation_rate = number of BLAST_QC_PASS NUMT loci with >=2 pooled reads
+passing BOTH strict nuclear support and expected chrM homology, divided by the
+number of BLAST_QC_PASS NUMT loci in that sample-platform.
+
+Cleanup requires **rate > 0.90**, not >=0.90; at least **10**
+BLAST_QC_PASS loci (configurable); all runs in the supplied manifest to
+have completed alignment AND nuclear+chrM validation; identical reference,
+besthit and candidate locus definitions across runs; an existing complete
+merged BAM with valid BAI, identical read-group IDs and a complete merge
+audit. This uses ONT or PacBio evidence **separately**, not a combined
+platform result. If any check fails, preserve all full-genome BAMs.
+BLAST_QC_FAIL candidates are NOT included in the rate denominator.
+
+Dry-run the cleanup decision for an existing merged group:
+
+```bash
+python3 scripts/cleanup_validated_whole_bams.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --sample SRS11219892 --platform ONT
+```
+
+For NEW sample-platform merges, auto-cleanup is **opt-in** via
+`--cleanup-if-validated`. It runs within the Slurm merge job after
+the targeted merge and its checks, and deletes only the source
+`aligned.bam` and `aligned.bam.bai` files on strict approval:
+
+```bash
+# Preview the groups; no submission:
+python3 scripts/submit_sample_platform_merges.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --batch-size 2 --concurrent 1 --cleanup-if-validated
+
+# Submit merge + cleanup (PERMANENT deletion if >90% gate passes):
+python3 scripts/submit_sample_platform_merges.py \
+  --manifest data/pilot_remote_manifest.tsv \
+  --batch-size 2 --concurrent 1 --cleanup-if-validated --submit
+```
+
+For an existing successfully merged group the cleanup tool can also
+run with `--execute` after reviewing its dry-run output. A
+`whole_bam_cleanup_audit.json` records numerator, denominator,
+rate, source BAM list, decision and any deletion. Output read-level
+TSVs, sample-level results, merged BAM and provenance are kept.
+The separate default no-cleanup mode is unchanged.
+
+**Irreversible limitation:** after deletion, whole-genome off-target
+alignments are unavailable. NUMT-targeted BAM retains only existing
+candidate regions and chrM; it cannot recover evidence for newly
+discovered NUMTs or reads mapped elsewhere. Threshold revalidation
+that uses only existing candidate regions may be feasible, but
+recomputing arbitrary whole-genome alignments will require re-download
+and re-alignment. Do not enable cleanup for early exploratory analyses
+if that information remains important.
+
+Also note that the submitted merge script currently requires all run
+BAMs in a group simultaneously, so temporary space must hold the
+per-run whole-genome BAMs plus targeted extracts during merge. The
+automatic cleanup is post-merge, **not a streaming per-run BAM deletion**.
