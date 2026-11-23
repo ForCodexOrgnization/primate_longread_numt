@@ -24,3 +24,13 @@ COMMAND=(python3 "$ROOT/scripts/merge_sample_platform_numt_bam.py"
 for manifest in "${MANIFESTS[@]}"; do COMMAND+=(--manifest "$manifest"); done
 if [[ "${NUMT_MERGE_ALLOW_PARTIAL:-0}" == 1 ]]; then COMMAND+=(--allow-partial); fi
 "${COMMAND[@]}"
+
+# Optional strict-gated cleanup after successful complete targeted BAM merge.
+if [[ "${NUMT_MERGE_CLEANUP:-0}" == 1 ]]; then
+  CLEAN=(python3 "$ROOT/scripts/cleanup_validated_whole_bams.py"
+    --sample "$SAMPLE" --platform "$PLATFORM"
+    --results-root "$ROOT/results" --out-root "$NUMT_MERGE_OUT_ROOT"
+    --min-candidates "${NUMT_MERGE_MIN_CANDIDATES:-10}" --execute)
+  for manifest in "${MANIFESTS[@]}"; do CLEAN+=(--manifest "$manifest"); done
+  "${CLEAN[@]}"
+fi
