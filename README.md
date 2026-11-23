@@ -178,3 +178,76 @@ number of chrM-hit loci, preferably stratified by `BLAST_QC_PASS` and
 treated as separate independent samples. The validation relies on
 reference-guided nuclear coordinates and predicted chrM intervals; it
 is targeted, supportive evidence, not de novo NUMT discovery.
+
+
+## Expand from selected pilot to ALL available cohort long-read runs
+
+The original `prepare_metadata.py` default produces *paired Illumina+long-read*
+samples. It does **not** cover long-read-only samples. To include all cohort
+samples with ONT or PacBio and keep the original pilot files untouched:
+
+```bash
+cd /nfs/roberts/scratch/pi_njl27/lt692/primate_longread_numt
+python3 scripts/prepare_metadata.py \
+  --metadata data/primate_metadata_master_FINAL_with_missing_Zoonomia.tsv \
+  --outdir data --include-longread-only
+
+# This can involve many ENA requests. Cached completed lookups are reused.
+python3 scripts/resolve_ena_runs.py \
+  --candidate-runs data/all_longread_candidate_runs.tsv \
+  --out data/all_longread_resolved_runs.tsv
+
+# Exclude the 22 explicitly selected pilot run accessions, but include any
+# additional runs on pilot samples. Flag missing FASTQs and ENA errors.
+python3 scripts/select_remaining_longread_runs.py \
+  --resolved data/all_longread_resolved_runs.tsv \
+  --pilot-selection data/pilot_run_selection.tsv \
+  --out data/all_longread_nonpilot_resolved.tsv
+
+# Review PacBio data type individually: map-pb (CLR/subreads) or
+# map-hifi (CCS/HiFi). REVIEW is intentionally NOT allowed to run.
+python3 scripts/generate_presets.py \
+  --resolved data/all_longread_nonpilot_resolved.tsv \
+  --out data/all_longread_nonpilot_presets.tsv
+# Manually edit PacBio REVIEW entries in this TSV.
+
+source config/bouchet.env
+python3 scripts/build_remote_manifest.py \
+  --resolved data/all_longread_nonpilot_resolved.tsv \
+  --reference-dir "$WHOLE_REF_DIR" --besthit-dir "$BESTHIT_DIR" \
+  --presets data/all_longread_nonpilot_presets.tsv \
+  --out data/all_longread_nonpilot_manifest.tsv
+
+# Inspect missing references, missing per-sample NUMT besthit, missing
+# verified FASTQs, and unreviewed PacBio presets BEFORE submission.
+cat data/all_longread_nonpilot_manifest.skipped.tsv
+
+mkdir -p logs
+python3 scripts/submit_batch.py \
+  --manifest data/all_longread_nonpilot_manifest.tsv \
+  --batch-size 2 --concurrent 1 --dry-run
+```
+
+Remove `--dry-run` only after confirming the manifest and that no corresponding
+Slurm jobs are active. `submit_batch.py` skips completed alignment runs but
+**does not track pending/running jobs**; running repeated submit commands without
+checking `squeue -u "$USER"` can produce duplicate attempts. Proceed in bounded
+batches, then validate completed alignments:
+
+```bash
+python3 scripts/submit_validation_batch.py \
+  --manifest data/all_longread_nonpilot_manifest.tsv \
+  --batch-size 4 --concurrent 2 --dry-run
+
+# Remove --dry-run to submit only after reviewing the pending jobs.
+# Aggregate new cohort separately, preserving existing pilot summaries:
+python3 scripts/aggregate_representative_pilot.py \
+  --manifest data/all_longread_nonpilot_manifest.tsv \
+  --outdir results/all_longread_nonpilot_summary
+```
+
+Note that `build_remote_manifest.py` checks for a single species-named reference
+and sample-matched NUMT besthit. Any missing input is skipped, **not** silently
+replaced with a different species' reference. A skipped run is not a validated
+run; investigate `*.skipped.tsv`. ENA run-level platform lookup is essential:
+the original metadata lists platforms at the *sample* level, not the run level.
