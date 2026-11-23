@@ -3,7 +3,9 @@ import argparse,csv
 from pathlib import Path
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--metadata',required=True);p.add_argument('--outdir',required=True)\n p.add_argument('--include-longread-only',action='store_true',help='Include all cohort samples with ONT or PacBio, even without Illumina; default retains existing paired-cohort filter')\n a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--metadata',required=True);p.add_argument('--outdir',required=True)
+ p.add_argument('--include-longread-only',action='store_true',help='Include all cohort samples with ONT or PacBio, even without Illumina; default retains existing paired-cohort filter')
+ a=p.parse_args()
  out=Path(a.outdir);out.mkdir(parents=True,exist_ok=True)
  with open(a.metadata,newline='') as f:rows=list(csv.DictReader(f,delimiter='\t'))
  selected=[r for r in rows if ('PACBIO' in r['sequencing_platform'].upper() or 'NANOPORE' in r['sequencing_platform'].upper()) and (a.include_longread_only or 'ILLUMINA' in r['sequencing_platform'].upper())]
