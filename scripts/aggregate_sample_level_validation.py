@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--min-flank-aligned", type=int, default=80)
     ap.add_argument("--max-deletion", type=int, default=20)
     ap.add_argument("--min-support", type=int, default=2)
+    ap.add_argument("--require-complete", action="store_true", help="Fail when any requested run has pending validation evidence")
     args = ap.parse_args()
     if args.min_mapq < 20:
         ap.error("MAPQ<20 cannot be recovered from stored per-read evidence")
@@ -162,6 +163,9 @@ def main():
         status.append(dict(sample=sample,species=species,platform=platform,run=run,
                            status="VALIDATED",detail=f"{len(li)} loci"))
 
+    pending = [r for r in status if r["status"] != "VALIDATED"]
+    if args.require_complete and pending:
+        raise SystemExit(f"ERROR: {len(pending)} pending runs; refusing partial final validation")
     if not records:
         raise SystemExit("No completed per-run evidence in requested manifests")
     locus_out=[]
@@ -204,17 +208,20 @@ def main():
     by_sample=defaultdict(list)
     for r in locus_out:
         by_sample[(r["sample"],r["species"])].append(r)
-    for (sample,species),rs in sorted(by_sample.items()):
+    for (sample,species) in sorted(sample_runs):
+        rs = by_sample.get((sample,species), [])
+        completed_count = sum(z["sample"] == sample and z["species"] == species and z["status"] == "VALIDATED" for z in status)
         summary.append(dict(sample=sample,species=species,
+                            completeness="COMPLETE" if completed_count == len(sample_runs[(sample,species)]) else "PARTIAL",
                             n_manifest_runs=len(sample_runs[(sample,species)]),
-                            n_completed_runs=sum(z["sample"]==sample and z["species"]==species and z["status"]=="VALIDATED" for z in status),
+                            n_completed_runs=completed_count,
                             platforms=";".join(sorted(sample_platforms[(sample,species)])),
                             n_loci=len(rs),
                             n_blast_qc_pass=sum(r["group"]=="BLAST_QC_PASS" for r in rs),
                             n_nuclear_supported=sum(r["nuclear_status"]=="SUPPORTED" for r in rs),
                             n_both_supported=sum(r["final_status"]=="VALIDATED" for r in rs)))
     write(out/"sample_summary.tsv",summary,
-          ["sample","species","n_manifest_runs","n_completed_runs","platforms","n_loci",
+          ["sample","species","completeness","n_manifest_runs","n_completed_runs","platforms","n_loci",
            "n_blast_qc_pass","n_nuclear_supported","n_both_supported"])
     write(out/"run_status.tsv",status,["sample","species","platform","run","status","detail"])
     parameters=dict(min_mapq=args.min_mapq,min_identity=args.min_identity,
