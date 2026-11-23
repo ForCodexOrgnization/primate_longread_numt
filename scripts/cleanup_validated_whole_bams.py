@@ -66,7 +66,8 @@ def main():
     merged=json.loads(audit.read_text())
     if (merged.get("sample")!=args.sample or merged.get("platform")!=args.platform
         or merged.get("partial") is not False
-        or merged.get("n_manifest_runs")!=merged.get("n_included_runs")):
+        or merged.get("n_manifest_runs")!=merged.get("n_included_runs")
+        or merged.get("target_record_counts_verified") is not True):
         raise SystemExit("SKIP: merged audit does not prove a complete group")
 
     runs={}
@@ -80,6 +81,8 @@ def main():
             runs[accession]=row
     if not runs or set(runs)!=set(merged.get("included_runs",[])):
         raise SystemExit("SKIP: merged BAM source runs differ from full manifest")
+    if set(merged.get("per_run_target_records",{}))!=set(runs) or any(v<=0 for v in merged["per_run_target_records"].values()):
+        raise SystemExit("SKIP: run-level merged target record count audit missing or invalid")
     if len({r["reference"] for r in runs.values()})!=1 or len({r["besthit"] for r in runs.values()})!=1:
         raise SystemExit("SKIP: reference or NUMT candidate source mismatch")
     if (merged.get("reference")!=next(iter(runs.values()))["reference"]
