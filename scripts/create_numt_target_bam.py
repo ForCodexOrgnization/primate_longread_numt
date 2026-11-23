@@ -34,7 +34,6 @@ def main():
     if not source.is_file() or not Path(str(source)+".bai").is_file():
         p.error("Requires existing indexed BAM")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".partial")
     regions = []
     with open(args.loci, newline="") as f:
         for r in csv.DictReader(f, delimiter="\t"):
@@ -42,58 +41,44 @@ def main():
                             int(r["nuclear_end0"])))
     if not regions:
         p.error("No candidate NUMT loci found")
-    with pysam.AlignmentFile(str(source),"rb",reference_filename=args.reference) as input_bam:
-        refs = {c: input_bam.get_reference_length(c) for c in input_bam.references}
-        if args.chrm not in refs:
-            p.error("BAM has no chrM contig")
-        segments = {args.chrm: [(0,refs[args.chrm])]}
-        for chrom,start,end in regions:
-            if chrom not in refs or not (0 <= start < end <= refs[chrom]):
-                raise ValueError(f"Invalid locus interval: {chrom}:{start}-{end}")
-            segments.setdefault(chrom,[]).append((max(0,start-args.padding),
-                                                   min(refs[chrom],end+args.padding)))
-        merged = []
-        for chrom, rr in segments.items():
-            for start,end in sorted(rr):
-                if merged and merged[-1][0]==chrom and start<=merged[-1][2]:
-                    merged[-1]=(chrom,merged[-1][1],max(merged[-1][2],end))
-                else:
-                    merged.append((chrom,start,end))
-        # Unique records may occur in disjoint intervals of a chimeric read;
-        # samtools view -L de-duplicates alignments across overlapping BED regions.
-        # pysam loop over merged intervals does not if separate intervals touch the
-        # same long alignment, so deduplicate using stable alignment coordinates.
-        seen=set()
-        n=0
-        with pysam.AlignmentFile(str(tmp),"wb",template=input_bam) as out_bam:
-            for chrom,start,end in merged:
-                for read in input_bam.fetch(chrom,start,end):
-                    key=(read.query_name,read.flag,read.reference_id,read.reference_start,
-                         read.cigarstring,read.next_reference_id,read.next_reference_start)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    out_bam.write(read)
-                    n+=1
-    # Writing reads by genomic interval means header order may be broken between
-    # chromosomes. Sort explicitly before indexing.
-    sorted_bam=dest.with_suffix(dest.suffix+".sorted.partial")
+    with pysam.AlignmentFile(str(source),"rb",reference_filename=args.reference) as bam:
+        refs = {c: bam.get_reference_length(c) for c in bam.references}
+    if args.chrm not in refs:
+        p.error("BAM has no chrM contig")
+    segments = {args.chrm: [(0, refs[args.chrm])]}
+    for chrom, start, end in regions:
+        if chrom not in refs or not (0 <= start < end <= refs[chrom]):
+            raise ValueError(f"Invalid locus interval: {chrom}:{start}-{end}")
+        segments.setdefault(chrom, []).append(
+            (max(0,start-args.padding),min(refs[chrom],end+args.padding)))
+    merged=[]
+    for chrom,rr in segments.items():
+        for start,end in sorted(rr):
+            if merged and merged[-1][0]==chrom and start<=merged[-1][2]:
+                merged[-1]=(chrom,merged[-1][1],max(merged[-1][2],end))
+            else:
+                merged.append((chrom,start,end))
+    bed=dest.with_suffix(dest.suffix+".regions.bed")
+    raw=dest.with_suffix(dest.suffix+".unsorted.partial.bam")
+    sorted_bam=dest.with_suffix(dest.suffix+".sorted.partial.bam")
     try:
-        pysam.sort("-@",str(args.threads),"-o",str(sorted_bam),str(tmp))
-        with pysam.AlignmentFile(str(sorted_bam),"rb") as f:
-            if f.check_index():
-                pass
-        # check_index requires index; index only after promoting the sorted BAM.
-    except Exception:
-        # check_index may raise because index is not yet generated; handle below.
-        if not sorted_bam.exists() or sorted_bam.stat().st_size == 0:
-            raise
-    sorted_bam.replace(dest)
-    pysam.index("-@",str(args.threads),str(dest))
-    with pysam.AlignmentFile(str(dest),"rb") as bam:
-        if not bam.has_index():
-            raise RuntimeError("Target BAM index verification failed")
-    tmp.unlink(missing_ok=True)
+        with bed.open("w") as handle:
+            for chrom,start,end in merged:
+                handle.write(f"{chrom}\\t{start}\\t{end}\\n")
+        # samtools -L emits each alignment at most once even for BED overlap.
+        pysam.view("-b","-L",str(bed),"-o",str(raw),str(source),catch_stdout=False)
+        pysam.sort("-@",str(args.threads),"-o",str(sorted_bam),str(raw))
+        with pysam.AlignmentFile(str(sorted_bam),"rb") as bam:
+            n=bam.count(until_eof=True)
+        sorted_bam.replace(dest)
+        pysam.index("-@",str(args.threads),str(dest))
+        with pysam.AlignmentFile(str(dest),"rb") as bam:
+            if not bam.has_index():
+                raise RuntimeError("Target BAM index verification failed")
+    finally:
+        bed.unlink(missing_ok=True)
+        raw.unlink(missing_ok=True)
+        sorted_bam.unlink(missing_ok=True)
     metadata=dict(input=str(source),output=str(dest),padding=args.padding,
                   n_numt_loci=len(regions),n_intervals=len(merged),n_bam_records=n,
                   original_bam_preserved=True)
