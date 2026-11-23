@@ -106,8 +106,10 @@ def main():
             raise ValueError(f"Reference mismatch across runs for {sample}: {ref}")
         reference_by_sample[s] = ref
         base = root / sample / run
-        nbase = base / "chrm_candidate_validation"
-        cbase = base / "longread_chrM_homology"
+        if args.validation_tag and not all(c.isalnum() or c in "_-" for c in args.validation_tag):
+            ap.error("validation-tag may contain only letters, numbers, underscore and hyphen")
+        nbase = base / ("chrm_candidate_validation" + ("_" + args.validation_tag if args.validation_tag else ""))
+        cbase = base / ("longread_chrM_homology" + ("_" + args.validation_tag if args.validation_tag else ""))
         required = [nbase / "chrM_candidate_locus_validation.tsv",
                     nbase / "chrM_candidate_read_evidence.tsv",
                     cbase / "per_locus_chrM_homology.tsv",
@@ -227,7 +229,7 @@ def main():
     parameters=dict(min_mapq=args.min_mapq,min_identity=args.min_identity,
                     min_locus_fraction=args.min_locus_fraction,min_flank_aligned=args.min_flank_aligned,
                     max_deletion=args.max_deletion,min_support=args.min_support,
-                    manifest=args.manifest,results_root=str(root),
+                    manifest=args.manifest,results_root=str(root),validation_tag=args.validation_tag,
                     limitation="chrM read homology was computed only for reads originally strict under run-level QC; max 40 per locus per run")
     (out/"parameters.json").write_text(json.dumps(parameters,indent=2)+"\n")
     print(f"Sample-level: {len(summary)} samples, {len(locus_out)} candidate loci; completed runs: {sum(x['status']=='VALIDATED' for x in status)}/{len(status)}")
