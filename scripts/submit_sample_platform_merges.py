@@ -14,8 +14,12 @@ def main():
     p.add_argument("--concurrent",type=int,default=2)
     p.add_argument("--allow-partial",action="store_true")
     p.add_argument("--submit",action="store_true")
+    p.add_argument("--cleanup-if-validated",action="store_true",help="After a successful full merge, delete per-run whole BAMs only if strict >90% gate passes")
+    p.add_argument("--min-candidates",type=int,default=10)
     a=p.parse_args()
-    if min(a.batch_size,a.concurrent)<1:p.error("counts must be >=1")
+    if min(a.batch_size,a.concurrent,a.min_candidates)<1:p.error("counts must be >=1")
+    if a.cleanup_if_validated and a.allow_partial:
+        p.error("Cleanup is incompatible with --allow-partial")
     groups=defaultdict(dict)
     manifests=[str((ROOT/Path(x)).resolve()) for x in a.manifest]
     for path in manifests:
@@ -47,6 +51,7 @@ def main():
     if not queued:return
     if not a.submit:
         print("PLAN ONLY: add --submit after checking disk space and active Slurm jobs.")
+        print("Cleanup after merge:",a.cleanup_if_validated)
         return
     folder=ROOT/"data"/"batches";folder.mkdir(parents=True,exist_ok=True)
     batch=folder/("numt_merge_"+datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")+".tsv")
@@ -57,7 +62,9 @@ def main():
              "--export=ALL,LR_PROJECT_ROOT="+str(ROOT)+",NUMT_MERGE_BATCH="+str(batch)+
              ",NUMT_MERGE_MANIFESTS="+",".join(manifests)+
              ",NUMT_MERGE_OUT_ROOT="+str(out)+
-             ",NUMT_MERGE_ALLOW_PARTIAL="+("1" if a.allow_partial else "0"),
+             ",NUMT_MERGE_ALLOW_PARTIAL="+("1" if a.allow_partial else "0")+
+             ",NUMT_MERGE_CLEANUP="+("1" if a.cleanup_if_validated else "0")+
+             ",NUMT_MERGE_MIN_CANDIDATES="+str(a.min_candidates),
              str(ROOT/"slurm"/"merge_sample_platform_numt.sbatch")]
     print(" ".join(command))
     subprocess.run(command,check=True,cwd=ROOT)
