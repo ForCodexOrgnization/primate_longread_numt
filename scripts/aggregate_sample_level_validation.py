@@ -57,6 +57,7 @@ def main():
                     help="May repeat for pilot + nonpilot manifest")
     ap.add_argument("--results-root", default="results")
     ap.add_argument("--outdir", default="results/sample_level_validation")
+    ap.add_argument("--validation-tag", default="", help="Use per-run revalidation evidence suffixed with this tag")
     ap.add_argument("--min-mapq", type=int, default=20)
     ap.add_argument("--min-identity", type=float, default=.80)
     ap.add_argument("--min-locus-fraction", type=float, default=.90)
@@ -65,8 +66,8 @@ def main():
     ap.add_argument("--min-support", type=int, default=2)
     ap.add_argument("--require-complete", action="store_true", help="Fail when any requested run has pending validation evidence")
     args = ap.parse_args()
-    if args.min_mapq < 20:
-        ap.error("MAPQ<20 cannot be recovered from stored per-read evidence")
+    if args.min_mapq < 20 and not args.validation_tag:
+        ap.error("Original read evidence has already excluded MAPQ<20; use a full-BAM revalidation tag")
     if not (0 < args.min_identity <= 1 and 0 < args.min_locus_fraction <= 1):
         ap.error("fraction thresholds must be within (0,1]")
     if not (0 <= args.min_flank_aligned <= 100 and args.max_deletion >= 0 and args.min_support >= 1):
@@ -119,6 +120,18 @@ def main():
             status.append(dict(sample=sample,species=species,platform=platform,run=run,
                                status="PENDING",detail=";".join(missing)))
             continue
+        if args.validation_tag:
+            provenance = base / ("revalidation_" + args.validation_tag + ".json")
+            if not provenance.is_file():
+                raise ValueError(f"Missing parameter provenance: {provenance}")
+            cfg = json.loads(provenance.read_text())
+            expected = {"min_mapq":args.min_mapq,"min_identity":args.min_identity,
+                        "min_locus_fraction":args.min_locus_fraction,
+                        "min_flank_fraction":args.min_flank_aligned/100,
+                        "max_deletion":args.max_deletion}
+            for k,v in expected.items():
+                if abs(float(cfg[k])-float(v))>1e-7:
+                    raise ValueError(f"Parameter mismatch {sample}/{run}: {k}: run={cfg[k]} aggregation={v}")
         locs = load(required[0])
         reads = load(required[1])
         clocs = load(required[2])
