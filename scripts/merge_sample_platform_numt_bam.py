@@ -199,8 +199,8 @@ def main():
             hdr = subprocess.check_output(["samtools","view","-H",str(merged)],text=True)
             rg_ids = set()
             for line in hdr.splitlines():
-                if line.startswith("@RG\\t"):
-                    fields = dict(x.split(":",1) for x in line.split("\\t")[1:])
+                if line.startswith("@RG\t"):
+                    fields = dict(x.split(":",1) for x in line.split("\t")[1:])
                     rg_ids.add(fields.get("ID"))
             expected_rg = {r["run"] for r,_ in ready}
             if not expected_rg.issubset(rg_ids):
