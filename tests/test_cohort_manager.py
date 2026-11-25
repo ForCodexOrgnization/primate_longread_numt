@@ -56,6 +56,30 @@ class CohortManagerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 m.query_slurm("123_1")
 
+    def test_parent_only_sacct_record(self):
+        """Bouchet may omit 123_1 while reporting parent 123 FAILED 75."""
+        import subprocess
+        queue=subprocess.CompletedProcess(args=["squeue"],returncode=1,
+            stdout="",stderr="slurm_load_jobs error: Invalid job id specified")
+        with patch.object(m.subprocess, "run", return_value=queue), \
+             patch.object(m, "cmd", return_value=(
+                 "123|FAILED|75:0\n"
+                 "123.batch|FAILED|75:0\n"
+                 "123.extern|COMPLETED|0:0\n")):
+            self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
+
+    def test_http_403_detection_is_job_specific(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/"logs").mkdir()
+            (root/"logs"/"lr_stream_123_1.log").write_text(
+                "Download aborted; status=403; partial=0 bytes\n")
+            (root/"logs"/"lr_stream_124_1.log").write_text(
+                "Download aborted; protocol error\n")
+            self.assertTrue(m.is_remote_403_failure("123_1",root))
+            self.assertFalse(m.is_remote_403_failure("124_1",root))
+            self.assertFalse(m.is_remote_403_failure("125_1",root))
+
     def test_completed_outputs_are_detected(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
