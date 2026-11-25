@@ -120,7 +120,7 @@ def is_remote_403_failure(jobid, root):
             tail=fh.read().decode("utf-8",errors="replace")
     except OSError:
         return False
-    return bool(re.search(r"(?:status\\s*=\\s*403|HTTP[/ ]\\d(?:\\.\\d)?\\s+403|Forbidden)",tail,re.I))
+    return ("status=403" in tail.replace(" ", "") or "Forbidden" in tail)
 
 
 def group_key(row):
