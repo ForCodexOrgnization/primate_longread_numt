@@ -68,11 +68,25 @@ def cmd(args):
 
 def query_slurm(jobid):
     """Return running / terminal / unknown, with state and exit code."""
-    queue=cmd(["squeue","-h","-j",str(jobid),"-o","%T"])
-    if queue.strip():
+    # A just-finished array task may no longer exist in squeue. On
+    # Bouchet, squeue -j ID_1 can exit nonzero with "Invalid job id
+    # specified" instead of returning an empty listing. This is expected
+    # during the queue -> accounting transition, not a controller failure.
+    queue_call=subprocess.run(["squeue","-h","-j",str(jobid),"-o","%T"],
+                              capture_output=True,text=True)
+    if queue_call.returncode:
+        message=(queue_call.stderr or "")+" "+(queue_call.stdout or "")
+        if not re.search(r"Invalid job id specified",message,re.IGNORECASE):
+            raise RuntimeError(f"squeue failed for {jobid}: {message.strip()}")
+        queue=""
+    else:
+        queue=queue_call.stdout.strip()
+    if queue:
         return ("active",queue.splitlines()[0].strip().upper(),None)
     # Allow for squeue-to-sacct propagation. Missing data is NOT failure.
-    accounting=cmd(["sacct","-n","-P","-j",str(jobid),
+    # Query the parent job; its accounting includes the task ID.
+    parent=str(jobid).split("_",1)[0]
+    accounting=cmd(["sacct","-n","-P","-j",parent,
                     "-o","JobIDRaw,State,ExitCode"])
     for line in accounting.splitlines():
         fields=line.split("|")
