@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline tests for cohort manager metadata, status, and retry classification."""
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,13 +32,29 @@ class CohortManagerTests(unittest.TestCase):
                 m.load_manifest([f])
 
     def test_slurm_array_job_active_and_failed(self):
-        with patch.object(m,"cmd",side_effect=["RUNNING",""]) as mock:
+        completed = lambda rc=0, out="", err="": subprocess.CompletedProcess(
+            args=["squeue"], returncode=rc, stdout=out, stderr=err)
+        with patch.object(m.subprocess, "run", return_value=completed(out="RUNNING\\n")) as mock:
             self.assertEqual(m.query_slurm("123_1"),("active","RUNNING",None))
             mock.assert_called_once()
-        with patch.object(m,"cmd",side_effect=["","123_1|FAILED|75:0\n123_1.batch|FAILED|75:0"]):
+        with patch.object(m.subprocess, "run", return_value=completed()), \
+             patch.object(m, "cmd", return_value="123|FAILED|1:0\\n123_1|FAILED|75:0\\n"):
             self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
-        with patch.object(m,"cmd",side_effect=["",""]):
+        # Bouchet: finished array task is removed from squeue with nonzero
+        # exit code and "Invalid job id specified". Must fall back to sacct.
+        with patch.object(m.subprocess, "run", return_value=completed(
+                1, err="slurm_load_jobs error: Invalid job id specified")), \
+             patch.object(m, "cmd", return_value="123|COMPLETED|0:0\\n123_1|FAILED|75:0\\n") as acct:
+            self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
+            self.assertEqual(acct.call_args.args[0][4],"123")
+        with patch.object(m.subprocess, "run", return_value=completed(
+                1, err="slurm_load_jobs error: Invalid job id specified")), \
+             patch.object(m, "cmd", return_value=""):
             self.assertEqual(m.query_slurm("123_1"),("unknown","NO_ACCOUNTING",None))
+        with patch.object(m.subprocess, "run", return_value=completed(
+                1, err="slurm_load_jobs error: Unauthorized")):
+            with self.assertRaises(RuntimeError):
+                m.query_slurm("123_1")
 
     def test_completed_outputs_are_detected(self):
         with tempfile.TemporaryDirectory() as d:
