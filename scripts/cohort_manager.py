@@ -146,7 +146,7 @@ def submit(stage,row,root,results,state_dir):
     jobid=output.split(";",1)[0]
     if not jobid.isdigit():
         raise RuntimeError("Unexpected sbatch job id: "+output)
-    return jobid
+    return jobid+"_1"
 
 
 def check_queue_for_run(run,stage):
@@ -191,7 +191,14 @@ def run_once(a,do_submit,root,manifest,state_dir):
             accession=row["run"]
             for stage in ("align","validate"):
                 key=status_key(stage,accession)
-                info=jobs.setdefault(key,{"attempts":0})
+                info=jobs.setdefault(key,{"attempts":0,"status":"PENDING"})
+                if "status" not in info: info["status"]="PENDING"
+                if info["status"]=="SUBMITTING" and not info.get("jobid"):
+                    found=check_queue_for_run(accession,stage)
+                    if found:
+                        info.update(jobid=found,status="ACTIVE",attempts=info["attempts"]+1)
+                    else:
+                        info["status"]="WAIT_SUBMISSION_RECONCILIATION"
                 # A completed validation is final even when whole BAM
                 # has already been archived and cleaned.
                 done=output_complete(row,stage,results)
@@ -253,7 +260,7 @@ def run_once(a,do_submit,root,manifest,state_dir):
                     continue
                 external=check_queue_for_run(row["run"],stage)
                 if external:
-                    info.update(jobid=external.split("_",1)[0],
+                    info.update(jobid=external,
                                 status="ACTIVE",external_discovered=True)
                     counts[stage]+=1
                     continue
