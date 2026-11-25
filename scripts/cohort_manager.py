@@ -160,12 +160,61 @@ def check_queue_for_run(run,stage):
     return None
 
 
+
+def merge_complete(group, rows, out_root):
+    sample,platform=group
+    target=out_root/sample/platform/"numt_target_merged.bam"
+    audit=out_root/sample/platform/"numt_target_merged.audit.json"
+    if not (isfile(target) and isfile(Path(str(target)+".bai")) and isfile(audit)):
+        return False
+    a=json.loads(audit.read_text())
+    wanted={r["run"] for r in rows}
+    return (a.get("sample")==sample and a.get("platform")==platform
+            and a.get("partial") is False
+            and set(a.get("included_runs",[]))==wanted
+            and a.get("n_included_runs")==len(wanted)
+            and a.get("target_record_counts_verified") is True
+            and set(a.get("per_run_target_records",{}))==wanted)
+
+
+def submit_merge(group, root, manifest_path, state_dir, clean):
+    sample,platform=group
+    batch=state_dir/"jobs"/("merge_"+sample+"_"+platform+".tsv")
+    with batch.open("w") as f:
+        f.write("sample\tplatform\n"+sample+"\t"+platform+"\n")
+    output=cmd([
+        "sbatch","--parsable","--job-name=ln_mg_"+sample+"_"+platform,
+        "--array=1-1",
+        "--export=ALL,LR_PROJECT_ROOT="+str(root)+
+        ",NUMT_MERGE_BATCH="+str(batch)+
+        ",NUMT_MERGE_MANIFESTS="+str(manifest_path)+
+        ",NUMT_MERGE_OUT_ROOT="+str(root/"results"/"sample_platform_bams")+
+        ",NUMT_MERGE_ALLOW_PARTIAL=0,NUMT_MERGE_CLEANUP="+("1" if clean else "0")+
+        ",NUMT_MERGE_MIN_CANDIDATES=10",
+        str(root/"slurm"/"merge_sample_platform_numt.sbatch")
+    ])
+    parent=output.split(";",1)[0]
+    if not parent.isdigit():
+        raise RuntimeError("Bad sbatch job id: "+output)
+    return parent+"_1"
+
+
+def check_queue_group(group):
+    sample,platform=group
+    name="ln_mg_"+sample+"_"+platform
+    data=cmd(["squeue","-h","-u",os.environ["USER"],"-o","%j|%i"])
+    for line in data.splitlines():
+        title,_,jid=line.partition("|")
+        if title==name:
+            return jid
+    return None
+
 def gib_free(path):
     s=os.statvfs(path)
     return s.f_bavail*s.f_frsize/(1024**3)
 
 
-def run_once(a,do_submit,root,manifest,state_dir):
+def run_once(a,do_submit,root,manifest,state_dir,manifest_path):
     results=(root/"results").resolve()
     staging=(root/"data"/"longread_download_stage").resolve()
     state_dir.mkdir(parents=True,exist_ok=True)
@@ -278,6 +327,74 @@ def run_once(a,do_submit,root,manifest,state_dir):
                     info.pop("next_retry_time",None)
                     atomic_write(state_path,state)
             # Prioritize validation of already-aligned runs in group order.
+        # Once every run in a biological sample/platform is fully validated,
+        # archive its NUMT + chrM alignments with provenance. By design,
+        # this is NOT triggered on partial run groups.
+        merge_root=root/"results"/"sample_platform_bams"
+        active_merges=0
+        for group in order:
+            key="merge:"+group[0]+":"+group[1]
+            info=jobs.setdefault(key,{"attempts":0,"status":"PENDING"})
+            finished=merge_complete(group,groups[group],merge_root)
+            target=merge_root/group[0]/group[1]/"numt_target_merged.bam"
+            if finished:
+                info["status"]="DONE"
+            elif target.exists() or (target.parent/"numt_target_merged.audit.json").exists():
+                info["status"]="BLOCKED_EXISTING_INCOMPLETE_ARCHIVE"
+            elif info.get("jobid"):
+                kind,slurm,exitcode=query_slurm(info["jobid"])
+                if kind=="active":
+                    info["status"]="ACTIVE"
+                    active_merges+=1
+                elif kind=="unknown":
+                    info["status"]="WAIT_ACCOUNTING"
+                    active_merges+=1
+                else:
+                    info.pop("jobid")
+                    if slurm=="COMPLETED":
+                        info["status"]="BLOCKED_OUTPUT_MISSING"
+                    elif slurm in RETRY_STATES:
+                        info["status"]="RETRYABLE"
+                        info["next_retry_time"]=time.time()+a.retry_delay_minutes*60
+                    else:
+                        info["status"]="BLOCKED_FAILURE"
+                        info["last_error"]=slurm+":"+str(exitcode)
+            elif info["status"]=="SUBMITTING":
+                found=check_queue_group(group)
+                if found:
+                    info.update(jobid=found,status="ACTIVE",
+                                attempts=info["attempts"]+1)
+                    active_merges+=1
+                else:
+                    info["status"]="WAIT_SUBMISSION_RECONCILIATION"
+            if info["status"] not in ("PENDING","RETRYABLE"):
+                continue
+            if not all(output_complete(r,"validate",results) for r in groups[group]):
+                continue
+            if active_merges>=a.max_merge or not disk_ok:
+                continue
+            if info["attempts"]>=a.max_attempts:
+                info["status"]="MAX_ATTEMPTS"
+                continue
+            if info.get("next_retry_time",0)>time.time():
+                continue
+            old=check_queue_group(group)
+            if old:
+                info.update(jobid=old,status="ACTIVE",
+                            external_discovered=True)
+                active_merges+=1
+                continue
+            print(("SUBMIT" if do_submit else "WOULD_SUBMIT"),
+                  "merge",group,flush=True)
+            if do_submit:
+                info["status"]="SUBMITTING"
+                atomic_write(state_path,state)
+                jid=submit_merge(group,root,manifest_path,state_dir,a.cleanup_if_validated)
+                info.update(jobid=jid,status="ACTIVE",
+                            attempts=info["attempts"]+1,submitted_utc=stamp())
+                atomic_write(state_path,state)
+            active_merges+=1
+
         for info in jobs.values():
             if info.get("status")=="PLANNED":
                 info["status"]="PENDING"
@@ -292,7 +409,7 @@ def run_once(a,do_submit,root,manifest,state_dir):
         print("JOB STATES",dict(sorted(totals.items())),flush=True)
         for stage,row in selected:
             print(("SUBMITTED" if do_submit else "WOULD_SUBMIT"),stage,row["sample"],row["run"],flush=True)
-        all_done=all(jobs[status_key("validate",r["run"])]["status"]=="DONE" for r in tasks)
+        all_done=all(jobs[status_key("validate",r["run"])]["status"]=="DONE" for r in tasks) and all(jobs["merge:"+g[0]+":"+g[1]]["status"]=="DONE" for g in order)
         blocked=sum(info["status"].startswith("BLOCKED") or info["status"]=="MAX_ATTEMPTS" for info in jobs.values())
         if not disk_ok:print("PAUSED: disk guard; no new alignments",flush=True)
         if blocked:print("ATTENTION: blocked jobs:",blocked,flush=True)
@@ -306,6 +423,8 @@ def main():
     ap.add_argument("--min-free-gib",type=float,default=500)
     ap.add_argument("--max-align",type=int,default=1)
     ap.add_argument("--max-validate",type=int,default=1)
+    ap.add_argument("--max-merge",type=int,default=1)
+    ap.add_argument("--cleanup-if-validated",action="store_true",help="Allow irreversible full BAM deletion only after strict >90% gate")
     ap.add_argument("--max-attempts",type=int,default=5)
     ap.add_argument("--retry-delay-minutes",type=int,default=15)
     ap.add_argument("--submit",action="store_true",help="Allow Slurm submissions; default preview")
@@ -314,13 +433,14 @@ def main():
     ap.add_argument("--watch-hours",type=float,default=18)
     a=ap.parse_args()
     if not all(x>0 for x in (a.min_free_gib,a.max_align,a.max_validate,
-                              a.max_attempts,a.retry_delay_minutes,
+                              a.max_merge,a.max_attempts,a.retry_delay_minutes,
                               a.poll_seconds,a.watch_hours)):
         ap.error("All resource and timing parameters must be >0")
     if a.watch and not a.submit:
         ap.error("--watch requires --submit")
     root=ROOT
-    manifest=load_manifest([(root/a.manifest).resolve()])
+    manifest_path=(root/a.manifest).resolve()
+    manifest=load_manifest([manifest_path])
     state_dir=(root/a.state_dir).resolve()
     if not (root/"config/bouchet.env").is_file():
         ap.error("Run from full Bouchet checkout containing config/bouchet.env")
@@ -331,7 +451,7 @@ def main():
     start=time.monotonic()
     while True:
         try:
-            finished=run_once(a,a.submit,root,manifest,state_dir)
+            finished=run_once(a,a.submit,root,manifest,state_dir,manifest_path)
         except BlockingIOError:
             print("A cohort controller already holds the lock. Exiting without submissions.")
             return
