@@ -661,3 +661,26 @@ complete group archive; it will NOT overwrite them automatically.
 
 The controller and its test have been committed but should be verified
 on Bouchet against real Slurm accounting before large-scale use.
+
+
+### Restart after Bouchet "Invalid job id specified" on squeue
+
+If a controller tick fails with `squeue -j JOBID_1` reporting
+`slurm_load_jobs error: Invalid job id specified`, pull the branch
+containing the Slurm accounting fallback fix. It queries `sacct` by
+the parent job ID, then selects the exact `JOBID_1` array task;
+missing accounting is `WAIT_ACCOUNTING`, not a signal to resubmit.
+Do not delete `data/cohort_manager/state.json` or partially downloaded
+FASTQs. Once no earlier `lr_numt_manager` tick is active/pending,
+run the new controller tick with the same `COHORT_MANIFEST`,
+limits and `COHORT_CLEANUP` setting. The failed controller's
+afterok chain will not restart itself. Existing worker jobs are
+reconciled against the recorded Slurm job IDs. If Slurm shows a
+different active manager, do not start a second copy.
+
+Check:
+```bash
+python3 -m unittest discover -s tests -p 'test_cohort_manager.py' -v
+squeue -u "$USER"
+sacct -j 34657930 --format=JobIDRaw,State,ExitCode
+```
