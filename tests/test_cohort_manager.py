@@ -46,8 +46,8 @@ class CohortManagerTests(unittest.TestCase):
             base=root/"SRS1"/"SRR1"
             (base/"chrm_candidate_validation").mkdir(parents=True)
             (base/"longread_chrM_homology").mkdir(parents=True)
-            for rel in ("chrM_candidate_validation/chrM_candidate_locus_validation.tsv",
-                        "chrM_candidate_validation/chrM_candidate_read_evidence.tsv",
+            for rel in ("chrm_candidate_validation/chrM_candidate_locus_validation.tsv",
+                        "chrm_candidate_validation/chrM_candidate_read_evidence.tsv",
                         "longread_chrM_homology/per_locus_chrM_homology.tsv",
                         "longread_chrM_homology/per_read_chrM_homology.tsv"):
                 target = base / rel
