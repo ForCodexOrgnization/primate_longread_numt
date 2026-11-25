@@ -551,3 +551,113 @@ Also note that the submitted merge script currently requires all run
 BAMs in a group simultaneously, so temporary space must hold the
 per-run whole-genome BAMs plus targeted extracts during merge. The
 automatic cleanup is post-merge, **not a streaming per-run BAM deletion**.
+
+
+## Full-cohort automatic Slurm scheduling and checkpoint retries
+
+Use **one manifest containing all runnable pilot + non-pilot ONT/PacBio
+runs**. All PacBio presets must be reviewed (HiFi/CLR) before starting.
+The controller reads existing outputs, so successful pilot runs are reused.
+
+`scripts/cohort_manager.py` persists state in `data/cohort_manager/state.json`
+and uses a file lock so two controllers cannot submit simultaneously.
+It submits ONE Slurm array task per run and uses squeue plus sacct accounting
+to reconcile PENDING/RUNNING/terminal jobs. Each job uses a unique stable
+name. For previously running legacy jobs (old names), the controller blocks
+startup to avoid duplicate downloads. Changing the manifest after launch
+is blocked until its persisted state is reconciled.
+
+Recovery is intentionally conservative:
+
+- Download error exit 75 (aria2 interrupted, .partial and .aria2 retained):
+  retry after a 15-minute delay, up to 5 attempts per run by default.
+- Slurm TIMEOUT/NODE_FAIL/PREEMPTED/BOOT_FAIL: retry align, validation and
+  sample-platform merge (up to configured attempt limit).
+- MD5/gzip quarantine (76), aria2 control file error (77), invalid
+  input/configuration or unknown FAILED exit: BLOCKED, no automatic retry.
+- Missing sacct accounting: WAIT_ACCOUNTING, no optimistic resubmission.
+- Successful work and stored evidence are reused. Full BAMs deleted by
+  the strict cleanup gate are NOT regenerated when original run validation
+  TSVs remain present.
+
+Space/concurrency defaults are `--max-align 1 --max-validate 1
+--max-merge 1 --min-free-gib 500`. Low disk pauses new alignments
+and merges (but allows existing run validations to finish). For
+large sample-platform groups the full-run BAMs still accumulate until
+the whole group can be merged. If strict validation <=90%, no cleanup
+occurs and the controller may pause for low disk; this is expected.
+
+### Setup and one-shot preview
+
+```bash
+cd /nfs/roberts/scratch/pi_njl27/lt692/primate_longread_numt
+git pull origin feature/representative-pilot-selection-20261029
+
+# Must exist: ready full manifest with unique run accessions.
+# See "Expand from selected pilot to ALL available cohort long-read runs".
+python3 -m unittest discover -s tests -p "test_cohort_manager.py" -v
+python3 scripts/cohort_manager.py --manifest data/full_cohort_manifest.tsv
+
+# Also review all current Slurm jobs before starting:
+squeue -u "$USER"
+```
+
+### Start recurring Slurm controller (one command)
+
+The controller schedules the next lightweight management tick as a
+`--dependency=afterok` Slurm job 5 minutes later, until all runs and
+group merges finish, the STOP marker exists, or `COHORT_MAX_TICKS` is
+reached. It does NOT keep a login-node process running.
+
+```bash
+mkdir -p logs
+sbatch --export=ALL,LR_PROJECT_ROOT="$PWD",COHORT_MANIFEST=data/full_cohort_manifest.tsv,COHORT_MIN_FREE_GIB=500,COHORT_MAX_ALIGN=1,COHORT_MAX_VALIDATE=1,COHORT_MAX_MERGE=1,COHORT_MAX_ATTEMPTS=5,COHORT_CLEANUP=0 \
+  slurm/cohort_manager_tick.sbatch
+```
+
+`COHORT_CLEANUP=0` is the safe initial mode. Set `COHORT_CLEANUP=1`
+ONLY if you explicitly approve irreversible deletion of original
+whole-genome BAM/BAI after the previously specified strict >90%
+BLAST_QC_PASS NUMT support gate and complete targeted BAM validation.
+All per-run evidence TSVs and merged NUMT-target BAMs are retained.
+
+Check progress:
+
+```bash
+squeue -u "$USER"
+python3 - <<'PY'
+import json,collections
+d=json.load(open("data/cohort_manager/state.json"))
+print("Updated:",d.get("last_tick_utc"))
+print("Counts:",collections.Counter(v.get("status") for v in d["jobs"].values()))
+for name,x in d["jobs"].items():
+    if str(x.get("status","")).startswith("BLOCKED") or x.get("status")=="MAX_ATTEMPTS":
+        print("Review:",name,x.get("last_error",x.get("status")))
+PY
+```
+
+Stop future submissions (active worker jobs are NOT cancelled):
+
+```bash
+mkdir -p data/cohort_manager
+touch data/cohort_manager/STOP
+```
+
+To resume, remove the STOP marker only after checking jobs and state.
+Do NOT run old `submit_batch.py` concurrently with the controller.
+
+**Operational notes:** The recurrent tick controller detects work
+completion using existing indexed BAMs and per-run TSVs, then starts the
+per-sample-platform NUMT-target BAM merger and its optional cleanup. The
+aggregated `sample_locus_validation.tsv` remains a separate reporting
+step; after each fully processed group or at the end run
+`scripts/aggregate_sample_level_validation.py --manifest
+data/full_cohort_manifest.tsv --outdir
+results/full_cohort_sample_validation --require-complete`.
+If not all runs are complete, omit `--require-complete` to view explicitly
+PARTIAL results. Previous one-run targeted BAMs for a group now expanded
+to many runs must be moved aside before the controller can make the
+complete group archive; it will NOT overwrite them automatically.
+
+The controller and its test have been committed but should be verified
+on Bouchet against real Slurm accounting before large-scale use.
