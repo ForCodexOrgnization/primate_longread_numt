@@ -34,17 +34,17 @@ class CohortManagerTests(unittest.TestCase):
     def test_slurm_array_job_active_and_failed(self):
         completed = lambda rc=0, out="", err="": subprocess.CompletedProcess(
             args=["squeue"], returncode=rc, stdout=out, stderr=err)
-        with patch.object(m.subprocess, "run", return_value=completed(out="RUNNING\\n")) as mock:
+        with patch.object(m.subprocess, "run", return_value=completed(out="RUNNING\n")) as mock:
             self.assertEqual(m.query_slurm("123_1"),("active","RUNNING",None))
             mock.assert_called_once()
         with patch.object(m.subprocess, "run", return_value=completed()), \
-             patch.object(m, "cmd", return_value="123|FAILED|1:0\\n123_1|FAILED|75:0\\n"):
+             patch.object(m, "cmd", return_value="123|FAILED|1:0\n123_1|FAILED|75:0\n"):
             self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
         # Bouchet: finished array task is removed from squeue with nonzero
         # exit code and "Invalid job id specified". Must fall back to sacct.
         with patch.object(m.subprocess, "run", return_value=completed(
                 1, err="slurm_load_jobs error: Invalid job id specified")), \
-             patch.object(m, "cmd", return_value="123|COMPLETED|0:0\\n123_1|FAILED|75:0\\n") as acct:
+             patch.object(m, "cmd", return_value="123|COMPLETED|0:0\n123_1|FAILED|75:0\n") as acct:
             self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
             self.assertEqual(acct.call_args.args[0][4],"123")
         with patch.object(m.subprocess, "run", return_value=completed(
