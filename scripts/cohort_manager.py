@@ -11,6 +11,7 @@ guesses job failure). Checks active Slurm queues before every submission.
 import argparse
 import csv
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -226,6 +227,11 @@ def run_once(a,do_submit,root,manifest,state_dir,manifest_path):
         jobs=state.setdefault("jobs",{})
         state["last_tick_utc"]=stamp()
         state["manifest_runs"]=len(manifest)
+        manifest_hash=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()
+        previous=state.get("manifest_sha256")
+        if previous and previous!=manifest_hash:
+            raise RuntimeError("Manifest changed since controller start; stop controller and reconcile saved state before resuming")
+        state["manifest_sha256"]=manifest_hash
         # After sample-platform BAM cleanup the run-level full BAM is removed,
         # but validated per-read TSVs still certify completed processing.
         groups=defaultdict(list)
@@ -438,6 +444,11 @@ def main():
         ap.error("All resource and timing parameters must be >0")
     if a.watch and not a.submit:
         ap.error("--watch requires --submit")
+    if a.submit:
+        old_names={"lr_numt_stream","primate_numt_validation"}
+        active=cmd(["squeue","-h","-u",os.environ["USER"],"-o","%j"])
+        if old_names & set(active.splitlines()):
+            raise SystemExit("Existing legacy long-read Slurm jobs detected. Finish/cancel them before starting cohort manager to prevent duplicate submissions.")
     root=ROOT
     manifest_path=(root/a.manifest).resolve()
     manifest=load_manifest([manifest_path])
