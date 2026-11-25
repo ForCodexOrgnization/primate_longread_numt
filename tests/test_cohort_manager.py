@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Offline tests for cohort manager metadata, status, and retry classification."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts import cohort_manager as m
+
+
+class CohortManagerTests(unittest.TestCase):
+    def row(self, run="SRR1", preset="map-ont"):
+        return dict(sample="SRS1",species="Species_one",run=run,
+                    platform="ONT",preset=preset,fastq_ftp="ftp.sra.ebi.ac.uk/test.fastq.gz",
+                    reference="/ref.fa",besthit="/besthit.tsv")
+
+    def test_manifest_deduplicates_runs_and_rejects_unsafe_presets(self):
+        with tempfile.TemporaryDirectory() as d:
+            f=Path(d)/"manifest.tsv"
+            import csv
+            def save(rows):
+                with f.open("w",newline="") as out:
+                    w=csv.DictWriter(out,fieldnames=m.FIELDS,delimiter="\t")
+                    w.writeheader()
+                    w.writerows(rows)
+            save([self.row(),self.row()])
+            self.assertEqual(len(m.load_manifest([f])),1)
+            save([self.row(preset="REVIEW")])
+            with self.assertRaises(ValueError):
+                m.load_manifest([f])
+
+    def test_slurm_array_job_active_and_failed(self):
+        with patch.object(m,"cmd",side_effect=["RUNNING",""]) as mock:
+            self.assertEqual(m.query_slurm("123_1"),("active","RUNNING",None))
+            mock.assert_called_once()
+        with patch.object(m,"cmd",side_effect=["","123_1|FAILED|75:0\n123_1.batch|FAILED|75:0"]):
+            self.assertEqual(m.query_slurm("123_1"),("terminal","FAILED",75))
+        with patch.object(m,"cmd",side_effect=["",""]):
+            self.assertEqual(m.query_slurm("123_1"),("unknown","NO_ACCOUNTING",None))
+
+    def test_completed_outputs_are_detected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            row=self.row()
+            base=root/"SRS1"/"SRR1"
+            (base/"chrm_candidate_validation").mkdir(parents=True)
+            (base/"longread_chrM_homology").mkdir(parents=True)
+            for rel in ("chrM_candidate_validation/chrM_candidate_locus_validation.tsv",
+                        "chrM_candidate_validation/chrM_candidate_read_evidence.tsv",
+                        "longread_chrM_homology/per_locus_chrM_homology.tsv",
+                        "longread_chrM_homology/per_read_chrM_homology.tsv"):
+                (base/rel).write_text("header\n")
+            self.assertTrue(m.output_complete(row,"validate",root))
+            self.assertFalse(m.output_complete(row,"align",root))
+
+    def test_merge_complete_requires_all_runs_and_verified_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);target=root/"SRS1"/"ONT"/"numt_target_merged.bam"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"test")
+            Path(str(target)+".bai").write_bytes(b"test")
+            audit=target.parent/"numt_target_merged.audit.json"
+            payload=dict(sample="SRS1",platform="ONT",partial=False,
+                         included_runs=["SRR1"],n_included_runs=1,
+                         target_record_counts_verified=True,
+                         per_run_target_records={"SRR1":10})
+            audit.write_text(json.dumps(payload))
+            self.assertTrue(m.merge_complete(("SRS1","ONT"),[self.row()],root))
+            self.assertFalse(m.merge_complete(("SRS1","ONT"),
+                                              [self.row(),self.row("SRR2")],root))
+            payload["partial"]=True
+            audit.write_text(json.dumps(payload))
+            self.assertFalse(m.merge_complete(("SRS1","ONT"),[self.row()],root))
+
+
+if __name__=="__main__":
+    unittest.main()
