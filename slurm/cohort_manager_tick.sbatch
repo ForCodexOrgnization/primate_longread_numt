@@ -28,9 +28,9 @@ from pathlib import Path
 p=Path("data/cohort_manager/state.json")
 if not p.is_file():sys.exit(1)
 j=json.loads(p.read_text()).get("jobs",{})
-sys.exit(0 if j and all(v.get("status")=="DONE" for v in j.values()) else 1)
+sys.exit(0 if j and all(v.get("status")=="DONE" or v.get("status","").startswith("BLOCKED") or v.get("status")=="MAX_ATTEMPTS" for v in j.values()) else 1)
 PY
-then echo "ALL STAGES COMPLETE"; exit 0; fi
+then echo "ALL STAGES TERMINAL (completed or blocked); inspect state.json for any blocked runs"; exit 0; fi
 NUMBER="${COHORT_TICK_NO:-1}"
 MAX="${COHORT_MAX_TICKS:-10000}"
 if (( NUMBER >= MAX )); then echo "Maximum manager ticks reached; inspect status"; exit 0; fi
