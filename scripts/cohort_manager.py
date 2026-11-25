@@ -88,16 +88,39 @@ def query_slurm(jobid):
     parent=str(jobid).split("_",1)[0]
     accounting=cmd(["sacct","-n","-P","-j",parent,
                     "-o","JobIDRaw,State,ExitCode"])
+    entries={}
     for line in accounting.splitlines():
         fields=line.split("|")
-        if len(fields)<3 or fields[0]!=str(jobid):
+        if len(fields)<3:
             continue
+        raw_id=fields[0].strip()
         state=fields[1].split(" ",1)[0].split("+",1)[0].upper()
         exitcode=fields[2].split(":",1)[0]
         try: exitcode=int(exitcode)
         except ValueError: exitcode=None
-        return ("terminal",state,exitcode)
+        entries[raw_id]=(state,exitcode)
+    if str(jobid) in entries:
+        return ("terminal",*entries[str(jobid)])
+    # This controller submits exactly ONE task per array (1-1).
+    # Some Bouchet sacct configurations report only the parent job and
+    # .batch/.extern steps. Use the parent final state in that case,
+    # never the .extern state; no multi-task array uses this fallback.
+    if "_" in str(jobid) and str(jobid).endswith("_1") and parent in entries:
+        return ("terminal",*entries[parent])
     return ("unknown","NO_ACCOUNTING",None)
+
+
+def is_remote_403_failure(jobid, root):
+    """Read only the current job log, never classify prior runs' logs."""
+    log=root/"logs"/("lr_stream_"+str(jobid)+".log")
+    try:
+        with log.open("rb") as fh:
+            fh.seek(0,2)
+            fh.seek(max(0,fh.tell()-131072))
+            tail=fh.read().decode("utf-8",errors="replace")
+    except OSError:
+        return False
+    return bool(re.search(r"(?:status\\s*=\\s*403|HTTP[/ ]\\d(?:\\.\\d)?\\s+403|Forbidden)",tail,re.I))
 
 
 def group_key(row):
@@ -284,7 +307,8 @@ def run_once(a,do_submit,root,manifest,state_dir,manifest_path):
                     states[key]=info["status"]
                     continue
                 if info.get("jobid"):
-                    kind,slurm,exitcode=query_slurm(info["jobid"])
+                    observed_jobid=info["jobid"]
+                    kind,slurm,exitcode=query_slurm(observed_jobid)
                     info.update(last_slurm=slurm,last_exit_code=exitcode,
                                 last_observed_utc=stamp())
                     if kind=="active":
@@ -295,6 +319,9 @@ def run_once(a,do_submit,root,manifest,state_dir,manifest_path):
                         info.pop("jobid")
                         if slurm=="COMPLETED":
                             info["status"]="BLOCKED_OUTPUT_MISSING"
+                        elif stage=="align" and exitcode==75 and is_remote_403_failure(observed_jobid,root):
+                            info["status"]="BLOCKED_REMOTE_403"
+                            info["last_error"]="ENA_HTTP_403: verify FTP URL / ENA access before retry"
                         elif slurm in RETRY_STATES or (stage=="align" and exitcode==75):
                             info["status"]="RETRYABLE"
                             info["last_error"]=slurm+":"+str(exitcode)
