@@ -50,7 +50,9 @@ class CohortManagerTests(unittest.TestCase):
                         "chrM_candidate_validation/chrM_candidate_read_evidence.tsv",
                         "longread_chrM_homology/per_locus_chrM_homology.tsv",
                         "longread_chrM_homology/per_read_chrM_homology.tsv"):
-                (base/rel).write_text("header\n")
+                target = base / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("header\n")
             self.assertTrue(m.output_complete(row,"validate",root))
             self.assertFalse(m.output_complete(row,"align",root))
 
