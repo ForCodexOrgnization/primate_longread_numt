@@ -29,7 +29,7 @@ def main():
   info=cache[run] or {}
   platform=info.get('instrument_platform','').upper()
   kind='PACBIO' if 'PACBIO' in platform else ('ONT' if 'OXFORD_NANOPORE' in platform else 'OTHER')
-  output.append({**{k:row.get(k,'') for k in ['sample','biosample','species','run_accession']},'run_platform':platform,'run_model':info.get('instrument_model',''),'read_type':kind,'fastq_ftp':info.get('fastq_ftp',''),'submitted_ftp':info.get('submitted_ftp',''),'ena_sample_accession':info.get('sample_accession',''),'lookup_error':info.get('_error','')})
+  output.append({**{k:row.get(k,'') for k in ['sample','biosample','species','run_accession']},'run_platform':platform,'run_model':info.get('instrument_model',''),'read_type':kind,'fastq_ftp':info.get('fastq_ftp',''),'fastq_bytes':info.get('fastq_bytes',''),'submitted_ftp':info.get('submitted_ftp',''),'ena_sample_accession':info.get('sample_accession',''),'lookup_error':info.get('_error','')})
  cachepath.write_text(json.dumps(cache,indent=2))
  with open(a.out,'w',newline='') as f:
   w=csv.DictWriter(f,fieldnames=list(output[0]) if output else ['sample'],delimiter='\t');w.writeheader();w.writerows(output)
