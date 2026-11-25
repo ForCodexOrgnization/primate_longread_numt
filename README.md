@@ -684,3 +684,34 @@ python3 -m unittest discover -s tests -p 'test_cohort_manager.py' -v
 squeue -u "$USER"
 sacct -j 34657930 --format=JobIDRaw,State,ExitCode
 ```
+
+
+### Bouchet parent-only sacct and ENA HTTP 403
+
+Some single-task Slurm arrays return only the parent accounting row
+(`34657930|FAILED|75:0`, `.batch`, `.extern`) but not
+`34657930_1`. The controller now accepts the parent result **only**
+for its own single-task `_1` arrays. The parent `FAILED 75` state
+is therefore recognized instead of staying `WAIT_ACCOUNTING`.
+
+For `align` tasks with exit 75, the manager examines only the
+corresponding `logs/lr_stream_PARENT_1.log`. If that log reports an
+ENA HTTP `status=403`, it records `BLOCKED_REMOTE_403`, retains
+the staged partial data, and proceeds to other runnable runs instead
+of retrying a forbidden URL repeatedly. Other download exit-75
+errors retain normal retry behavior. This block is per run, not a
+global halt, and should later be investigated (ENA access and URL).
+
+If a recurring manager chain was started before this fix:
+```bash
+touch data/cohort_manager/STOP
+# Check squeue; let/cancel old pending manager ticks, NOT active workers.
+git pull origin feature/representative-pilot-selection-20261029
+python3 -m unittest discover -s tests -p 'test_cohort_manager.py' -v
+rm data/cohort_manager/STOP
+# Submit one new controller tick with your original 205-run manifest,
+# same resource limits and same COHORT_CLEANUP setting.
+```
+Never delete `data/cohort_manager/state.json` or FASTQ checkpoints.
+The controller stops scheduling further ticks once all stages are
+terminal (DONE, BLOCKED*, or MAX_ATTEMPTS).
